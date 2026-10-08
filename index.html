@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>SOFTER Tool</title>
+<title>SOFTER Blob Tool</title>
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob:; font-src data:; connect-src 'none'; form-action 'none'; base-uri 'none'">
 <meta name="description" content="Draw on a grid, type a word or load an image, and turn it into soft, merged blob shapes. Runs entirely in your browser. Save the result as a PNG or an SVG.">
 <meta name="application-name" content="SOFTER Blob Tool">
@@ -1252,6 +1252,7 @@
     const sp = worldToScreen(sticker.wx, sticker.wy, v);
     targetCtx.translate(sp.x, sp.y);
     targetCtx.rotate((sticker.rotation||0) * Math.PI/180);
+    if(sticker.flip) targetCtx.scale(-1, 1);      // a mirrored copy (Remix compositions are left/right symmetrical)
     targetCtx.scale(sticker.scale*v.zoom, sticker.scale*v.zoom);
     targetCtx.translate(-def.w/2, -def.h/2);
     if(stickerFillMode === 'gradient'){
@@ -1786,7 +1787,7 @@
   function snapshotContent(){
     return {
       nodes: nodeList.map(n => [n.i, n.j, n.wx, n.wy, n.r, n.sp, n.strokeId]),
-      stickers: stickerList.map(s => [s.key, s.wx, s.wy, s.scale, s.rotation || 0, !!s.rx]),
+      stickers: stickerList.map(s => [s.key, s.wx, s.wy, s.scale, s.rotation || 0, !!s.rx, !!s.flip]),
       fromConversion: canvasFromConversion,
     };
   }
@@ -1794,7 +1795,7 @@
     nodeList = s.nodes.map(([i,j,wx,wy,r,sp,strokeId]) => ({i, j, wx, wy, r, sp, strokeId}));
     nodeSet.clear();
     for(const n of nodeList) nodeSet.add(n.i+'_'+n.j);
-    stickerList = s.stickers.map(([key,wx,wy,scale,rotation,rx]) => ({key, wx, wy, scale, rotation, rx}));
+    stickerList = s.stickers.map(([key,wx,wy,scale,rotation,rx,flip]) => ({key, wx, wy, scale, rotation, rx, flip}));
     canvasFromConversion = s.fromConversion;
   }
   function trimHistory(){ while(undoStack.length > HISTORY_LIMIT) undoStack.shift(); }
@@ -1857,7 +1858,7 @@
   // ---------- Remix ----------
   // One tap makes a whole new look: style, shape, Grid spacing, Node size, colours and a
   // generated pattern, centred on the canvas. The marks go into Undo as one step (settings
-  // never do, see A1) and placed stickers are left alone.
+  // never do, see A1) and stickers already placed stay put and change colour.
   //
   // Settings and pattern are not picked independently and then shown. Each candidate is drawn
   // small, off screen, and measured, and it is only used if it passes remixPasses(). Failed
@@ -1866,9 +1867,9 @@
   const REMIX_MAX_W = 48, REMIX_MAX_H = 36;   // keeps Blend fast however fine the grid is
   const REMIX_LIGHT = ['#FFCCEE','#FFA4E0','#FFF5FC','#EFEFEF'];
   const REMIX_DARK  = ['#FF3B0F','#7C7C7C'];
-  const REMIX_TRIES = 40;
+  const REMIX_TRIES = 160;
   const REMIX_WORDS = ['soft','softer','softness'];
-  const REMIX_WORD_CHANCE = 0.35;             // how often a remix is a typed word instead of a pattern
+  const REMIX_WORD_CHANCE = 0.3;              // how often a remix is a typed word instead of a pattern
   const REMIX_SCALE = 0.25;                   // candidates are measured at a quarter of the size
   const DIRS8 = [[1,0],[1,1],[0,1],[-1,1],[-1,0],[-1,-1],[0,-1],[1,-1]];
   // Never both sliders near their top: spacing stays under 80% of its range and node size under
@@ -1877,6 +1878,30 @@
   const REMIX_SIZE_CAP = Math.round(5 + 0.8*(75 - 5));
   const REMIX_BLEND_SP_MAX = 44;              // above 36 only a mirrored pattern is allowed (see remixStrokes)
   let remixText = null;                       // the word Remix last put in the Text box
+  // After a Remix the Grid spacing and Node size sliders re-lay the same pattern in place (the
+  // pattern is kept as cells around its centre). That lasts only while the canvas is still exactly
+  // what Remix made; drawing, erasing, Clear or a conversion ends it, and Undo/Redo to another
+  // state does too. Nothing here goes into Undo, like the conversion sliders.
+  let remixLive = null;                       // { rel:[[di,dj,strokeId]], midX, midY, sig } or null
+  const remixSig = () => nodeList.length + '|' + nodeList.map(n => n.i+','+n.j+','+n.r+','+n.sp).join(';');
+  function remixRelay(){
+    const ci = Math.round(remixLive.midX / spacing), cj = Math.round(remixLive.midY / spacing);
+    nodeList = remixLive.rel.map(([di,dj,sid]) => makeNode(ci+di, cj+dj, sid));
+    nodeSet.clear(); for(const n of nodeList) nodeSet.add(n.i+'_'+n.j);
+    remixLive.sig = remixSig();
+  }
+  let remixPrev = { kind:null, ink:null, mask:null };   // the previous Remix, so the next one looks different
+  const remixKindOf = (nodes, word) => word ? 'word:'+word.text+':'+word.font : (nodes && nodes.kind) || '';
+  function remixOverlap(m){   // how much of the new ink sits where the last remix's ink was (0 to 1)
+    const a = m.mask, b = remixPrev.mask;
+    if(!a || !b || a.length !== b.length) return 0;
+    let both = 0, either = 0;
+    for(let i=0;i<a.length;i++){ if(a[i] && b[i]) both++; if(a[i] || b[i]) either++; }
+    return either ? both/either : 0;
+  }
+  function remixSimilar(look, nodes, m, word){   // same pattern kind, same ink, or nearly the same shape as last time
+    return remixKindOf(nodes, word) === remixPrev.kind || look.ink.join() === remixPrev.ink || remixOverlap(m) > 0.45;
+  }
   let remixLastBg = null;                     // background of the previous remix; the next one must differ
   let lastRemix = null;                       // measurements of the last remix (read by the tests)
 
@@ -1901,7 +1926,7 @@
       return two(set);
     };
     const inkGradient = rnd() < 0.45, bgGradient = rnd() < 0.35;
-    const flower = !wordy && rnd() < 0.2;   // flowers are too fine to spell with                // Flower cannot Blend
+    const flower = !wordy && rnd() < 0.25;   // flowers are too fine to spell with                // Flower cannot Blend
     const blend = !flower && rnd() < (wordy ? 0.75 : 0.3);   // thin letters read best when joined
     // a word needs a finer grid so its letters can be read
     const sp0 = wordy ? SPACING_MIN + Math.round(Math.pow(rnd(), 2) * 0.5 * (SPACING_MAX - SPACING_MIN))
@@ -2003,12 +2028,83 @@
       for(const st of wander(half)){ out.push(st); out.push(st.map(([i,j]) => [Math.round(2*axis - i), j])); }
       return out;
     };
+    const rings = () => {                      // ripples around one to three centres
+      const a = subArea(0.8), strokes = [], n = ri(1,3), g = ri(2,4);
+      for(let c=0;c<n;c++){
+        const cx = ri(a.i0,a.i1), cy = ri(a.j0,a.j1), maxR = Math.max(g*2, Math.round(Math.min(a.i1-a.i0, a.j1-a.j0)*(0.4+rnd()*0.5)));
+        for(let r=g; r<=maxR; r+=g){
+          const st = [], steps = Math.ceil(2*Math.PI*r*1.5);
+          for(let t=0;t<steps;t++){ const ang = 2*Math.PI*t/steps, i = Math.round(cx+Math.cos(ang)*r), j = Math.round(cy+Math.sin(ang)*r); if(inside(a,i,j)) st.push([i,j]); }
+          if(st.length) strokes.push(st);
+        }
+      }
+      return strokes;
+    };
+    const waves = () => {                      // wavy parallel bands
+      const a = subArea(0.8), vert = rnd() < 0.3, gap = ri(2,4), amp = ri(2,5), freq = 0.15 + rnd()*0.35, strokes = [];
+      const along = vert ? a.j1-a.j0 : a.i1-a.i0, across = vert ? a.i1-a.i0 : a.j1-a.j0;
+      for(let o=0;o<=across;o+=gap){
+        const st = [], ph = rnd()*6.28;
+        for(let t=0;t<=along;t++){
+          const off = Math.round(Math.sin(t*freq + ph + o*0.15)*amp), i = vert ? a.i0+o+off : a.i0+t, j = vert ? a.j0+t : a.j0+o+off;
+          if(inside(a,i,j)) st.push([i,j]);
+        }
+        if(st.length) strokes.push(st);
+      }
+      return strokes;
+    };
+    const spiral = () => {                     // one to three spiral arms
+      const a = subArea(0.8), cx = (a.i0+a.i1)/2, cy = (a.j0+a.j1)/2, maxR = Math.min(a.i1-a.i0, a.j1-a.j0)/2, arms = ri(1,3), gap = ri(2,4), strokes = [];
+      const thMax = 2*Math.PI*maxR/(gap*arms);
+      for(let k=0;k<arms;k++){
+        const st = [];
+        for(let th=0; th<=thMax; th+=0.04){ const r = th*gap*arms/(2*Math.PI), i = Math.round(cx+r*Math.cos(th+2*Math.PI*k/arms)), j = Math.round(cy+r*Math.sin(th+2*Math.PI*k/arms)); if(inside(a,i,j)) st.push([i,j]); }
+        if(st.length) strokes.push(st);
+      }
+      return strokes;
+    };
+    const rays = () => {                       // a starburst
+      const a = subArea(0.8), cx = (a.i0+a.i1)/2 + (rnd()-0.5)*4, cy = (a.j0+a.j1)/2 + (rnd()-0.5)*4, n = ri(8,24), full = rnd() < 0.5, strokes = [];
+      const maxR = Math.hypot(a.i1-a.i0, a.j1-a.j0)/2;
+      for(let k=0;k<n;k++){
+        const ang = 2*Math.PI*k/n + (rnd()-0.5)*0.2, len = full ? maxR : maxR*(0.4+rnd()*0.6), st = [];
+        for(let d=0; d<=len; d+=0.7){ const i = Math.round(cx+Math.cos(ang)*d), j = Math.round(cy+Math.sin(ang)*d); if(inside(a,i,j)) st.push([i,j]); }
+        if(st.length) strokes.push(st);
+      }
+      return strokes;
+    };
+    const bars = () => {                       // a skyline of bars
+      const a = subArea(0.8), w = ri(1,3), gap = ri(1,2), mid = rnd() < 0.4, strokes = [], hh = a.j1-a.j0+1;
+      for(let i=a.i0;i<=a.i1;i+=w+gap){
+        const h = ri(2, hh), j0 = mid ? a.j0 + Math.floor((hh-h)/2) : a.j1-h+1, st = [];
+        for(let x=0;x<w;x++) for(let j=j0;j<j0+h;j++) if(i+x<=a.i1) st.push([i+x,j]);
+        strokes.push(st);
+      }
+      return strokes;
+    };
+    const kaleido = () => {                    // wandering strokes mirrored left/right and top/bottom
+      const a = subArea(0.9), ax = (a.i0+a.i1)/2, ay = (a.j0+a.j1)/2, out = [];
+      const quarter = {i0:a.i0, i1:Math.floor(ax), j0:a.j0, j1:Math.floor(ay)};
+      for(const st of wander(quarter)){
+        out.push(st);
+        out.push(st.map(([i,j]) => [Math.round(2*ax-i), j]));
+        out.push(st.map(([i,j]) => [i, Math.round(2*ay-j)]));
+        out.push(st.map(([i,j]) => [Math.round(2*ax-i), Math.round(2*ay-j)]));
+      }
+      return out;
+    };
     // Isolated marks only make sense for Separate. In Blend they are just dots that never join.
     // Large, layered results are the goal (fields, mirrored shapes, big patches, many strokes);
-    // plain scatter and ruled lines are rare.
-    const kinds = look.blend ? [field, field, mirrored, mirrored, mirrored, patch, patch, wander, wander]
-                             : [field, field, mirrored, mirrored, patch, patch, wander, wander, scatter];
-    let strokes = (look.blend && look.sp > 36 ? mirrored : kinds[ri(0, kinds.length-1)])();
+    // plain scatter and ruled lines are rare. About a quarter of remixes layer two kinds.
+    const K = { field, mirrored, kaleido, patch, wander, scatter, lines, rings, waves, spiral, rays, bars };
+    const pool = look.blend ? ['field','field','mirrored','mirrored','kaleido','patch','patch','wander','wander','rings','waves','spiral','rays','lines']
+                            : ['field','field','mirrored','mirrored','kaleido','patch','patch','wander','wander','rings','waves','spiral','rays','bars','scatter','lines'];
+    let kind = look.blend && look.sp > 36 ? 'mirrored' : pool[ri(0, pool.length-1)];
+    let strokes = K[kind]();
+    if(kind !== 'scatter' && !(look.blend && look.sp > 36) && rnd() < 0.25){
+      const opts = pool.filter(k => k !== kind && k !== 'scatter' && k !== 'bars'), other = opts[ri(0, opts.length-1)];
+      strokes = strokes.concat(K[other]()); kind = kind + '+' + other;
+    }
 
     // on a very coarse grid a pattern can come out thin - top it up so there are always a few marks
     const taken = new Set(strokes.flat().map(([i,j]) => i+'_'+j));
@@ -2031,6 +2127,7 @@
         nodes.push({i, j, wx:i*look.sp, wy:j*look.sp, r:look.size, sp:look.sp, strokeId:k+1});
       }
     });
+    nodes.kind = kind;
     return nodes;
   }
 
@@ -2055,20 +2152,33 @@
     if(cols < 8 || rows < 4) return null;
     const img = w.canvas, scale = Math.min(cols/img.width, rows/img.height);
     const dw = Math.max(1, Math.floor(img.width*scale)), dh = Math.max(1, Math.floor(img.height*scale));
-    if(dw / w.longest < 5) return null;        // under about 5 cells per letter is unreadable
+    if(dw / w.longest < 9) return null;        // under about 9 cells per letter the word is not readable
     const tmp = document.createElement('canvas'); tmp.width = dw; tmp.height = dh;
     const t = tmp.getContext('2d', {willReadFrequently:true});
     t.fillStyle = '#fff'; t.fillRect(0,0,dw,dh); t.imageSmoothingQuality = 'high';
     t.drawImage(downsampleProgressive(img, dw, dh), 0, 0, dw, dh);
     const d = t.getImageData(0,0,dw,dh).data, hits = [];
-    let minI=Infinity, maxI=-Infinity, minJ=Infinity, maxJ=-Infinity;
+    let minI=Infinity, maxI=-Infinity, minJ=Infinity, maxJ=-Infinity, ideal=0;
     for(let y=0;y<dh;y++) for(let x=0;x<dw;x++){
       const q = (y*dw+x)*4;
+      ideal += 1 - (0.299*d[q] + 0.587*d[q+1] + 0.114*d[q+2]) / 255;
       if(0.299*d[q] + 0.587*d[q+1] + 0.114*d[q+2] < 128){
         hits.push([x,y]); if(x<minI) minI=x; if(x>maxI) maxI=x; if(y<minJ) minJ=y; if(y>maxJ) maxJ=y;
       }
     }
-    if(hits.length < 12) return null;
+    if(hits.length < 12 || hits.length < 0.8*ideal) return null;
+    { // letters that shatter into many pieces (thin or slanted fonts) are not readable
+      const left = new Set(hits.map(([x,y]) => x+'_'+y)); let parts = 0;
+      for(const k of Array.from(left)){
+        if(!left.has(k)) continue; parts++; const stack=[k]; left.delete(k);
+        while(stack.length){ const [x,y] = stack.pop().split('_').map(Number);
+          for(let ax=-1;ax<=1;ax++) for(let ay=-1;ay<=1;ay++){ const q=(x+ax)+'_'+(y+ay); if(left.has(q)){ left.delete(q); stack.push(q); } } }
+      }
+      const letters = w.text.replace(/\s/g,'').length;
+      if(parts > letters*1.5 + 1) return null;
+      if((maxI-minI+1) / Math.max(1, maxJ-minJ+1) < 0.45*letters) return null;   // a word set as tall slanted strokes is not a row of letters
+    }
+   // thin or slanted strokes fall apart on a grid, so such a font is not used
     if(dw / w.longest < 8){      // strokes only a cell wide are too thin to see: thicken them by one cell
       const have = new Set(hits.map(([x,y]) => x+'_'+y));
       for(const [x,y] of hits.slice()) for(const [ax,ay] of [[1,0],[0,1]]){
@@ -2118,7 +2228,7 @@
       }
       if(area >= 3) shapes++;
     }
-    return { nodes:nodes.length, coverage: ink/(w*h), shapes,
+    return { mask, nodes:nodes.length, coverage: ink/(w*h), shapes,
              boxFill: ink ? ink / ((maxX-minX+1)*(maxY-minY+1)) : 0,
              spread: ink ? Math.max((maxX-minX+1)/w, (maxY-minY+1)/h) : 0 };
   }
@@ -2127,8 +2237,8 @@
   function remixPasses(look, m, isWord){
     const checks = {
       notEmpty:  m.coverage >= (isWord ? 0.04 : 0.12),   // letters are thin, so a word may ink less          // a few dots on a big empty canvas
-      notClogged: m.coverage <= (look.blend ? 0.30 : 0.40),         // one heavy mass, holes filled in
-      notBlock:  isWord || m.boxFill <= 0.78,   // a plain filled rectangle is not a design
+      notClogged: m.coverage <= (look.blend ? 0.30 : (isWord ? 0.40 : 0.30)),         // one heavy mass, holes filled in; a dense wall of dots or flowers is not a design
+      notBlock:  isWord || m.boxFill <= (look.blend ? 0.78 : 0.5),   // a plain filled rectangle is not a design
       spreads:   m.spread >= (isWord ? 0.5 : 0.6),            // a small cluster lost in the corner
       // Blend that does not blend: marks must actually join into shapes
       joins:     !look.blend || (m.nodes >= 12 && m.nodes / Math.max(1, m.shapes) >= 2.5),
@@ -2141,47 +2251,212 @@
     return { ok: failed.length === 0, failed };
   }
 
+  // The stickers are planned before the drawing is chosen, so the drawing can leave their corners
+  // clear. A plan is 1 or 2 stickers of one size in the corners of the canvas (about half of remixes),
+  // never on a sticker the visitor placed.
+  let remixPlan = [];
+  function remixPlanStickers(rnd){
+    if(rnd() >= REMIX_STICKER_CHANCE) return [];
+    const keys = Object.keys(STICKERS), n = [1,1,2,2,3][Math.floor(rnd()*5)];
+    const tl = screenToWorld(0,0), br = screenToWorld(W,H), cw = br.x-tl.x, ch = br.y-tl.y;
+    const size = 60 + Math.round(rnd()*80), scale = size / STICKER_REFERENCE_DIM;
+    const radiusOf = key => 0.5 * Math.hypot(STICKERS[key].w, STICKERS[key].h) * scale;   // circle around the sticker, any rotation
+    const placed = stickerList.filter(st => !st.rx).map(st => ({ x:st.wx, y:st.wy, r:0.5*Math.hypot(STICKERS[st.key].w, STICKERS[st.key].h)*st.scale }));
+    const plan = [];
+    for(let k=0;k<n;k++){
+      const key = keys[Math.floor(rnd()*keys.length)], R = radiusOf(key);
+      for(let attempt=0; attempt<80; attempt++){
+        const left = rnd() < 0.5, top = rnd() < 0.5, bandX = Math.max(1, 0.2*cw - R), bandY = Math.max(1, 0.2*ch - R);
+        const x = left ? tl.x + R + 8 + rnd()*bandX : br.x - R - 8 - rnd()*bandX, y = top ? tl.y + R + 8 + rnd()*bandY : br.y - R - 8 - rnd()*bandY;
+        if(placed.some(c => Math.hypot(c.x-x, c.y-y) < c.r + R + 12)) continue;
+        placed.push({x, y, r:R});
+        plan.push({ key, wx:x, wy:y, scale, rotation:90*Math.floor(rnd()*4), rx:true });
+        break;
+      }
+    }
+    return plan;
+  }
+  // True when a candidate's marks would sit under a sticker that stays on the canvas or is planned.
+  function remixHitsStickers(look, nodes){
+    return stickerList.filter(st => !st.rx).concat(remixPlan).some(st => {
+      const R = 0.5 * Math.hypot(STICKERS[st.key].w, STICKERS[st.key].h) * st.scale;
+      return nodes.some(n => Math.hypot(n.i*look.sp - st.wx, n.j*look.sp - st.wy) < look.size + 0.7*R);
+    });
+  }
   // Stickers are part of the variation: about half of remixes lay 1 to 4 stickers over the drawing,
-  // in a colour from the same class as the ink. Stickers a visitor placed themselves are never
-  // touched; only ones a previous remix added are replaced.
-  const REMIX_STICKER_CHANCE = 0.65;
-  function remixStickers(look, rnd, nodes){
-    stickerList = stickerList.filter(s => !s.rx);
-    if(rnd() >= REMIX_STICKER_CHANCE){ lastRemixStickers = 0; return; }
-    const keys = Object.keys(STICKERS); let n = [1,1,1,2,3,4][Math.floor(rnd()*6)];
+  // in a colour from the same class as the ink. Stickers the visitor placed stay where they are
+  // and only change colour; the ones Remix added are replaced on every click.
+  const REMIX_STICKER_CHANCE = 0.6;
+
+  // ---- Sticker-only Remix: no drawing, just stickers set as a composition ----
+  const REMIX_SCENE_CHANCE = 0.2;
+  let remixSceneMode = 'auto';                // 'auto' | 'off' | 'only' (the tests set this)
+  let remixPrevScene = { k1:null, k2:null, sig:null }, remixSceneNow = { k1:null, k2:null };   // the last sticker-only Remix, so the next uses other stickers
+  const remixSceneSig = items => items.map(it => it.key).sort().join(',');
+  function remixSceneItems(name, rnd){
+    const ri = (a,b) => a + Math.floor(rnd()*(b-a+1)), pick = a => a[Math.floor(rnd()*a.length)];
+    const keys = Object.keys(STICKERS);
+    const unit = key => 0.5 * Math.hypot(STICKERS[key].w, STICKERS[key].h);     // circle around the sticker at scale 1
+    const tl = screenToWorld(0,0), br = screenToWorld(W,H), cw = br.x-tl.x, ch = br.y-tl.y, cx = (tl.x+br.x)/2, cy = (tl.y+br.y)/2;
+    const make = (key, x, y, scale, rot) => ({ key, wx:x, wy:y, scale, rotation:rot == null ? 90*ri(0,3) : rot, rx:true });
+    const radius = it => unit(it.key) * it.scale;
+    const others = stickerList.filter(st => !st.rx).map(st => ({ x:st.wx, y:st.wy, r:radius(st) }));
+    const free = (x, y, r, list) => x-r >= tl.x+12 && x+r <= br.x-12 && y-r >= tl.y+12 && y+r <= br.y-12 &&
+      !others.some(o => Math.hypot(o.x-x, o.y-y) < o.r + r + 8) && !list.some(o => Math.hypot(o.wx-x, o.wy-y) < radius(o) + r + 8);
+    const keyMode = ri(0,2), k1 = pick(keys.filter(k => k !== remixPrevScene.k1)), k2 = pick(keys.filter(k => k !== k1 && k !== remixPrevScene.k2));
+    remixSceneNow = { k1, k2 };
+    const keyAt = n => keyMode === 0 ? k1 : keyMode === 1 ? (n % 2 ? k2 : k1) : pick(keys);   // one sticker, two alternating, or a mix
+    const rotMode = ri(0,2);
+    const rotAt = n => rotMode === 0 ? 0 : rotMode === 1 ? (n % 2 ? 90 : 0) : 90*ri(0,3);
+    const out = [];
+    if(name === 'grid' || name === 'brick'){
+      const cols = ri(3,6), rows = ri(2,4), cell = Math.min((cw-30)/(cols + (name === 'brick' ? 0.5 : 0)), (ch-30)/rows);
+      const ks = Array.from({length:cols*rows}, (_, n) => keyAt(n)), top = Math.max(...ks.map(unit));
+      const scale = 0.44*cell/top, w0 = cell*(cols + (name === 'brick' ? 0.5 : 0)), h0 = cell*rows;
+      for(let r=0;r<rows;r++) for(let c=0;c<cols;c++){
+        const x = cx - w0/2 + cell*(c+0.5) + (name === 'brick' && r%2 ? cell/2 : 0), y = cy - h0/2 + cell*(r+0.5);
+        out.push(make(ks[r*cols+c], x, y, scale, rotAt(r*cols+c)));
+      }
+    } else if(name === 'ring'){
+      const n = ri(6,12), a = cw*0.36, b = ch*0.36, circ = 2*Math.PI*Math.sqrt((a*a+b*b)/2), ks = Array.from({length:n}, (_, q) => keyAt(q));
+      const scale = Math.min(0.44*circ/n, b*0.5)/Math.max(...ks.map(unit)), th0 = rnd()*6.28;
+      ks.forEach((key, q) => { const th = th0 + 2*Math.PI*q/n; out.push(make(key, cx + a*Math.cos(th), cy + b*Math.sin(th), scale, rotAt(q))); });
+      if(rnd() < 0.6){ const kc = pick(keys), sc = Math.min(a, b)*0.62/unit(kc); out.push(make(kc, cx, cy, Math.min(sc, scale*2.6))); }
+    } else if(name === 'line'){
+      const n = ri(5,7), diag = rnd() < 0.7, grow = rnd() < 0.5, x0 = tl.x + cw*0.1, x1 = br.x - cw*0.1, y0 = diag ? tl.y + ch*0.15 : cy, y1 = diag ? br.y - ch*0.15 : cy;
+      const base = Math.min(cw, ch)*0.1;
+      for(let q=0;q<n;q++){
+        const t = q/(n-1), key = keyAt(q), f = 0.35 + 0.55*(grow ? t : 1-t), sc = base*f/unit(key);
+        out.push(make(key, x0 + (x1-x0)*t, y0 + (y1-y0)*t, sc, rotAt(q)));
+      }
+    } else if(name === 'hero' || name === 'packed' || name === 'mirrored'){
+      const big = name === 'hero' ? [0.34] : name === 'packed' ? [0.2, 0.2, 0.13, 0.13, 0.13, 0.09, 0.09, 0.09, 0.09, 0.06, 0.06, 0.06, 0.06, 0.06] : [0.18, 0.12, 0.12, 0.08, 0.08, 0.08, 0.06, 0.06];
+      const min = Math.min(cw, ch), smalls = name === 'hero' ? ri(8,14) : 0;
+      const sizes = big.map(f => f*min).concat(Array.from({length:smalls}, () => min*(0.05 + rnd()*0.05)));
+      for(const rad of sizes){
+        const key = pick(keys), sc = rad/unit(key);
+        for(let attempt=0; attempt<400; attempt++){
+          const x = name === 'hero' && out.length === 0 ? cx : tl.x + rad + 12 + rnd()*Math.max(1, cw - 2*rad - 24), y = name === 'hero' && out.length === 0 ? cy : tl.y + rad + 12 + rnd()*Math.max(1, ch - 2*rad - 24);
+          if(name === 'mirrored'){
+            const mx = 2*cx - x, left = x < cx - rad - 6;
+            if(!left || !free(x, y, rad, out) || !free(mx, y, rad, out.concat([make(key, x, y, sc, 0)]))) continue;
+            const rot = 90*ri(0,3); out.push(make(key, x, y, sc, rot)); out.push(make(key, mx, y, sc, (360-rot)%360)); break;
+          }
+          if(!free(x, y, rad, out)) continue;
+          out.push(make(key, x, y, sc)); break;
+        }
+      }
+    } else if(name === 'spiral'){
+      const n = ri(9,15), grow = rnd() < 0.5, turns = 1.2 + rnd()*0.6, maxR = Math.min(cw, ch)*0.42, min = Math.min(cw, ch);
+      for(let q=0;q<n;q++){
+        const t = (q+0.5)/n, th = 2*Math.PI*turns*t, r = maxR*Math.sqrt(t)*0.95 + 6, key = keyAt(q), f = 0.035 + 0.05*(grow ? t : 1-t);
+        out.push(make(key, cx + r*Math.cos(th)*1.25, cy + r*Math.sin(th), min*f/unit(key), rotAt(q)));
+      }
+    }
+    return out;
+  }
+  // Every sticker-only composition is left/right symmetrical: the left half is mirrored (a true mirror
+  // image, so the right-hand stickers are flipped copies), and only the two clover stickers, which are
+  // symmetrical themselves, may sit on the centre line.
+  function remixSceneSymmetric(items){
+    const tl = screenToWorld(0,0), br = screenToWorld(W,H), cx = (tl.x+br.x)/2, out = [];
+    for(const it of items){
+      const r = 0.5 * Math.hypot(STICKERS[it.key].w, STICKERS[it.key].h) * it.scale, dx = it.wx - cx;
+      if(Math.abs(dx) < 0.6*r){ if(it.key === 'sticker_1' || it.key === 'sticker_2') out.push(Object.assign({}, it, { wx:cx })); }
+      else if(dx < 0 && -dx > r + 4){
+        out.push(it);
+        out.push(Object.assign({}, it, { wx: 2*cx - it.wx, rotation: (360 - (it.rotation||0)) % 360, flip: true }));
+      }
+    }
+    return out;
+  }
+  function remixSceneOk(items){
+    if(items.length < 5 || items.length > 26) return false;
+    const tl = screenToWorld(0,0), br = screenToWorld(W,H), cw = br.x-tl.x, ch = br.y-tl.y;
+    const rad = it => 0.5 * Math.hypot(STICKERS[it.key].w, STICKERS[it.key].h) * it.scale;
+    let area = 0, minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+    for(const it of items){
+      const r = rad(it);
+      if(it.wx-r < tl.x+8 || it.wx+r > br.x-8 || it.wy-r < tl.y+8 || it.wy+r > br.y-8) return false;
+      if(r < 24) return false;                                                  // too small to see
+      area += Math.PI*r*r; minX = Math.min(minX, it.wx); maxX = Math.max(maxX, it.wx); minY = Math.min(minY, it.wy); maxY = Math.max(maxY, it.wy);
+    }
+    for(let a=0;a<items.length;a++) for(let b=a+1;b<items.length;b++)
+      if(Math.hypot(items[a].wx-items[b].wx, items[a].wy-items[b].wy) < rad(items[a]) + rad(items[b]) + 4) return false;   // no overlaps
+    for(const o of stickerList) if(!o.rx){                                      // stickers the visitor placed stay clear
+      const ro = 0.5 * Math.hypot(STICKERS[o.key].w, STICKERS[o.key].h) * o.scale;
+      if(items.some(it => Math.hypot(it.wx-o.wx, it.wy-o.wy) < rad(it) + ro + 8)) return false;
+    }
+    const filled = area/(cw*ch);
+    return filled >= 0.09 && filled <= 0.7 && (maxX-minX >= 0.5*cw || maxY-minY >= 0.5*ch);
+  }
+  const REMIX_SCENES = ['grid','brick','ring','line','hero','packed','mirrored','spiral'];
+  function remixStickerScene(rnd){
+    let look = null;
+    for(let t=0;t<30 && !look;t++){ const l = remixPickLook(rnd, false); if(l.bg.join() !== remixLastBg) look = l; }
+    if(!look) return false;
+    const names = REMIX_SCENES.filter(n => 'stickers:'+n !== remixPrev.kind);
+    let items = null, name = null, tries = 0;
+    for(; tries<40 && !items; tries++){
+      name = names[Math.floor(rnd()*names.length)];
+      const cand = remixSceneSymmetric(remixSceneItems(name, rnd));
+      if(remixSceneOk(cand) && remixSceneSig(cand) !== remixPrevScene.sig) items = cand;     // never the same stickers as last time
+    }
+    if(!items) return false;
+    remixLastBg = look.bg.join();
+    if(remixText !== null && textInput.value === remixText){ textInput.value = ''; sourceIsText = false; remixText = null; }
+    canvasFromConversion = false; remixLive = null;
+    remixApply(look);
+    lastRemix = { stickers: items.length, bg: look.bg.join(), sp: look.sp, size: look.size, word: null, font: null, tries, failed: [], blend: look.blend,
+                  nodes: 0, kind: 'stickers:'+name, overlap: 0, ink: look.ink.join(), prevKind: remixPrev.kind };
+    remixPrev = { kind: lastRemix.kind, ink: lastRemix.ink, mask: null };
+    remixPrevScene = { k1: remixSceneNow.k1, k2: remixSceneNow.k2, sig: remixSceneSig(items) };
+    pushHistory();
+    stickerList = stickerList.filter(st => !st.rx);        // stickers the visitor placed stay
+    nodeList = []; nodeSet.clear();
+    remixStickerColour(look, rnd);
+    for(const it of items) stickerList.push(it);
+    lastRemixStickers = items.length;
+    render();
+    return true;
+  }
+
+  // Stickers share one colour setting. Remix picks one from the same light/dark class as the ink,
+  // never red (solid or in a gradient), and always different from what the stickers had.
+  function remixStickerColour(look, rnd){
     const press = sel => { const el = document.querySelector(sel); if(el && !el.disabled) el.click(); };
     const set = (id, v) => { const el = document.getElementById(id); el.value = v; el.dispatchEvent(new Event('input', {bubbles:true})); };
     const group = look.ink.every(c => REMIX_DARK.includes(c)) ? REMIX_DARK : REMIX_LIGHT;
-    const others = group.filter(c => c !== look.ink[0] && c !== '#FF3B0F');   // a solid sticker is never red
+    const palette = group.filter(c => c !== '#FF3B0F').concat(group === REMIX_DARK ? ['#FFA4E0','#FFF5FC'] : []).filter(c => !look.bg.includes(c));   // and never the colour of the background   // never red, solid or in a gradient; dark ink keeps a second colour so the stickers can still change
+    if(!palette.length) palette.push('#7C7C7C');
+    const others = palette.filter(c => c !== look.ink[0]).length ? palette.filter(c => c !== look.ink[0]) : palette;
     const pick = a => a[Math.floor(rnd()*a.length)];
-    const gradient = (rnd() < 0.45 || !others.length) && group.length > 1;   // red is allowed only inside a gradient
-    press('#stickerFillModeSeg button[data-mode="'+(gradient ? 'gradient' : 'solid')+'"]');
-    if(gradient){
-      const [a, b] = [pick(group), pick(group)];
-      press('#stickerGradientTopSwatches .swatch[data-color="'+a+'"]'); press('#stickerGradientBottomSwatches .swatch[data-color="'+b+'"]');
-    } else press('#stickerSwatches .swatch[data-color="'+pick(others)+'"]');
-    // One size for the whole set, and every sticker needs clear space: inside the canvas, not on
-    // another sticker, and not on the drawing (so a word is never covered). A sticker that finds
-    // no clear spot after many tries is simply left out.
-    const tl = screenToWorld(0,0), br = screenToWorld(W,H);
-    const size = 70 + Math.round(rnd()*60), scale = size / STICKER_REFERENCE_DIM;
-    const radiusOf = key => 0.5 * Math.hypot(STICKERS[key].w, STICKERS[key].h) * scale;   // circle around the sticker, any rotation
-    const solid = nodes.map(nd => ({ x:nd.wx, y:nd.wy, r:nd.r + 0.5*nd.sp }));
-    const placed = stickerList.map(st => ({ x:st.wx, y:st.wy, r:radiusOf(st.key) }));        // stickers the visitor placed
+    // every colour option (solid, or a two-colour gradient); the one the stickers already have is left out, so they always change
+    const options = [];
+    for(const c of others) options.push({gradient:false, c, key:'solid'+c});
+    if(palette.length > 1) for(const a of palette) for(const b of palette) if(a !== b) options.push({gradient:true, a, b, key:'gradient'+a+b});
+    const current = stickerFillMode === 'gradient' ? 'gradient'+stickerGradientTop+stickerGradientBottom : 'solid'+stickerColor;
+    const fresh = options.filter(o => o.key !== current), chosenColour = pick(fresh.length ? fresh : options);
+    press('#stickerFillModeSeg button[data-mode="'+(chosenColour.gradient ? 'gradient' : 'solid')+'"]');
+    if(chosenColour.gradient){
+      press('#stickerGradientTopSwatches .swatch[data-color="'+chosenColour.a+'"]'); press('#stickerGradientBottomSwatches .swatch[data-color="'+chosenColour.b+'"]');
+    } else press('#stickerSwatches .swatch[data-color="'+chosenColour.c+'"]');
+  }
+  function remixStickers(look, rnd, nodes){
+    // Stickers the visitor placed stay exactly where they are and change colour with each Remix.
+    // Stickers an earlier Remix added are taken away and, about half the time, new ones are placed.
+    stickerList = stickerList.filter(s => !s.rx);
+    const keep = stickerList.length > 0, plan = remixPlan;
+    if(!keep && !plan.length){ lastRemixStickers = 0; return; }
+    remixStickerColour(look, rnd);
+    // a planned sticker is dropped only if the drawing that was chosen still reaches it
     let made = 0;
-    for(let k=0;k<n;k++){
-      const key = pick(keys), R = radiusOf(key);
-      for(let attempt=0; attempt<250; attempt++){
-        const x = tl.x + R + rnd()*Math.max(1, br.x-tl.x-2*R), y = tl.y + R + rnd()*Math.max(1, br.y-tl.y-2*R);
-        if(solid.some(c => Math.hypot(c.x-x, c.y-y) < c.r + 0.85*R)) continue;
-        if(placed.some(c => Math.hypot(c.x-x, c.y-y) < c.r + R + 12)) continue;
-        placed.push({x, y, r:R});
-        stickerList.push({ key, wx:x, wy:y, scale, rotation:90*Math.floor(rnd()*4), rx:true });
-        made++; break;
-      }
+    for(const pl of plan){
+      const R = 0.5 * Math.hypot(STICKERS[pl.key].w, STICKERS[pl.key].h) * pl.scale;
+      if(nodes.some(nd => Math.hypot(nd.i*look.sp - pl.wx, nd.j*look.sp - pl.wy) < nd.r + 0.5*nd.sp + 0.85*R ? true : false)) continue;
+      stickerList.push(Object.assign({}, pl)); made++;
     }
-    n = made;
-    lastRemixStickers = n;
+    lastRemixStickers = made;
   }
   let lastRemixStickers = 0;
 
@@ -2207,20 +2482,41 @@
 
   async function remix(rnd){
     rnd = rnd || Math.random;
+    if(remixSceneMode === 'only' || (remixSceneMode === 'auto' && rnd() < REMIX_SCENE_CHANCE)){ if(remixStickerScene(rnd)) return; }
+    remixPlan = remixPlanStickers(rnd);
     let word = rnd() < REMIX_WORD_CHANCE ? await remixPickWord(rnd) : null;
+    for(let r=0; word && r<6 && remixKindOf(null, word) === remixPrev.kind; r++) word = await remixPickWord(rnd);   // not the same word in the same font twice
+    if(word && remixKindOf(null, word) === remixPrev.kind) word = null;
     let chosen = null, best = null;
     for(let tries=1; tries<=REMIX_TRIES && !chosen; tries++){
       const look = remixPickLook(rnd, !!word);
       if(look.bg.join() === remixLastBg) continue;   // a new background every time
       const nodes = word ? remixWordNodes(look, word) : remixStrokes(look, rnd);
       if(!nodes || nodes.length < 6) continue;
+      if(tries <= 100 && remixHitsStickers(look, nodes)) continue;   // marks keep clear of stickers that stay
       const m = remixMeasure(look, nodes), verdict = remixPasses(look, m, !!word);
+      if(tries <= 135 && remixSimilar(look, nodes, m, word)) continue;
       const cand = { look, nodes, m, tries, failed:verdict.failed };
       if(verdict.ok) chosen = cand;
       else if(!best || verdict.failed.length < best.failed.length) best = cand;
     }
     chosen = chosen || best;
-    if(word && chosen && chosen.failed.length){   // a word that could not be made to read well is not used
+    if(word && (!chosen || chosen.failed.length)){   // that font did not suit the grid: try a few other words and fonts
+      for(let a=0; a<4 && !(chosen && !chosen.failed.length); a++){
+        const w2 = await remixPickWord(rnd); if(!w2) continue;
+        for(let tries=1; tries<=25; tries++){
+          const look = remixPickLook(rnd, true);
+          if(look.bg.join() === remixLastBg) continue;
+          const nodes = remixWordNodes(look, w2);
+          if(!nodes || nodes.length < 6) continue;
+          if(tries <= 20 && remixHitsStickers(look, nodes)) continue;
+          const m = remixMeasure(look, nodes), verdict = remixPasses(look, m, true);
+          if(remixSimilar(look, nodes, m, w2)) continue;
+          if(verdict.ok){ chosen = { look, nodes, m, tries, failed:[] }; word = w2; break; }
+        }
+      }
+    }
+    if(word && (!chosen || chosen.failed.length)){   // a word that could not be made to read well is not used
       word = null;
       chosen = null; best = null;
       for(let tries=1; tries<=REMIX_TRIES && !chosen; tries++){
@@ -2228,7 +2524,9 @@
         if(look.bg.join() === remixLastBg) continue;
         const nodes = remixStrokes(look, rnd);
         if(!nodes || nodes.length < 6) continue;
+        if(tries <= 100 && remixHitsStickers(look, nodes)) continue;
         const m = remixMeasure(look, nodes), verdict = remixPasses(look, m, false);
+        if(tries <= 135 && remixSimilar(look, nodes, m, null)) continue;
         const cand = { look, nodes, m, tries, failed:verdict.failed };
         if(verdict.ok) chosen = cand; else if(!best || verdict.failed.length < best.failed.length) best = cand;
       }
@@ -2246,8 +2544,13 @@
       textInput.value = ''; sourceIsText = false; remixText = null;
     }
     canvasFromConversion = false;          // a remix is hand-made content, not a re-runnable conversion
+    remixLive = null;                      // the sliders are about to be set by the remix itself
     remixApply(chosen.look);
     lastRemix = Object.assign({ stickers: 0, bg: chosen.look.bg.join(), sp: chosen.look.sp, size: chosen.look.size, word: word ? word.text.replace('\n',' ') : null, font: word ? word.font : null, tries:chosen.tries, failed:chosen.failed, blend:chosen.look.blend }, chosen.m);
+    lastRemix.kind = remixKindOf(chosen.nodes, word); lastRemix.overlap = remixOverlap(chosen.m); lastRemix.ink = chosen.look.ink.join();
+    lastRemix.prevKind = remixPrev.kind;
+    remixPrev = { kind: lastRemix.kind, ink: lastRemix.ink, mask: chosen.m.mask };
+    delete lastRemix.mask;
     pushHistory();
     remixStickers(chosen.look, rnd, chosen.nodes);
     lastRemix.stickers = lastRemixStickers;
@@ -2258,6 +2561,8 @@
       nodeSet.add(n.i+'_'+n.j);
       nodeList.push(makeNode(n.i, n.j, n.strokeId == null ? null : ids.get(n.strokeId)));   // typed words have no strokes, like Text
     }
+    { const mid = screenToWorld(W/2, H/2), ci = Math.round(mid.x/spacing), cj = Math.round(mid.y/spacing);
+      remixLive = { rel: nodeList.map(n => [n.i-ci, n.j-cj, n.strokeId]), midX: mid.x, midY: mid.y, sig: remixSig() }; }
     render();
   }
   let remixRunning = Promise.resolve();
@@ -2527,7 +2832,7 @@
         }
         fill = `url(#${id})`;
       }
-      body += `<g fill="${fill}" transform="translate(${svgNum(sp.x)} ${svgNum(sp.y)}) rotate(${st.rotation||0}) scale(${(st.scale*fitZoom).toFixed(5)}) translate(${-def.w/2} ${-def.h/2})">`
+      body += `<g fill="${fill}" transform="translate(${svgNum(sp.x)} ${svgNum(sp.y)}) rotate(${st.rotation||0})${st.flip ? ' scale(-1 1)' : ''} scale(${(st.scale*fitZoom).toFixed(5)}) translate(${-def.w/2} ${-def.h/2})">`
             + def.paths.map(d => `<path d="${d}"/>`).join('') + '</g>';
     }
 
@@ -2564,6 +2869,7 @@
 
   document.getElementById('spacingSlider').addEventListener('input', e=>{
     spacing = spacingFromRaw(+e.target.value);
+    if(remixLive && remixSig() === remixLive.sig) remixRelay(); else remixLive = null;
     render();
     // re-resample at the new grid density - applies to images and text alike, since
     // spacing decides how coarse the conversion reads.
@@ -2572,6 +2878,7 @@
 
   document.getElementById('radiusSlider').addEventListener('input', e=>{
     nodeRadius = +e.target.value;
+    if(remixLive && remixSig() === remixLive.sig) remixRelay(); else remixLive = null;
     render();
     if(canvasFromConversion) scheduleThreshPreview();
   });
@@ -3120,6 +3427,8 @@
 
   // Read-only snapshot of the drawing for the automated tests (tests/softer-tests.js).
   // read-only geometry of the stickers Remix added, for the tests
+  window.softerRemixMode = m => { remixSceneMode = m; };
+  window.softerCanvasCentreX = () => { const tl = screenToWorld(0,0), br = screenToWorld(W,H); return (tl.x+br.x)/2; };
   window.softerStickerGeometry = () => {
     const rxs = stickerList.filter(st => st.rx);
     const rad = st => 0.5 * Math.hypot(STICKERS[st.key].w, STICKERS[st.key].h) * st.scale;
@@ -3128,7 +3437,10 @@
       for(let b=a+1;b<rxs.length;b++) if(Math.hypot(rxs[a].wx-rxs[b].wx, rxs[a].wy-rxs[b].wy) < rad(rxs[a]) + rad(rxs[b])) overlap = true;
       for(const nd of nodeList) if(Math.hypot(nd.wx-rxs[a].wx, nd.wy-rxs[a].wy) < nd.r + 0.7*rad(rxs[a])) onInk = true;
     }
-    return { sizes: new Set(rxs.map(st => st.scale)).size, stickerOverlap: overlap, onInk };
+    const tl = screenToWorld(0,0), br = screenToWorld(W,H);
+    const inside = rxs.every(st => st.wx-rad(st) >= tl.x && st.wx+rad(st) <= br.x && st.wy-rad(st) >= tl.y && st.wy+rad(st) <= br.y);
+    const overVisitor = rxs.some(st => stickerList.some(o => !o.rx && Math.hypot(o.wx-st.wx, o.wy-st.wy) < rad(o) + rad(st)));
+    return { sizes: new Set(rxs.map(st => st.scale)).size, stickerOverlap: overlap, onInk, inside, overVisitor, count: rxs.length };
   };
   window.softerState = () => ({
     nodes: nodeList.length,
@@ -3141,7 +3453,7 @@
       const c = worldToScreen((Math.min(...xs)+Math.max(...xs))/2, (Math.min(...ys)+Math.max(...ys))/2);
       return {dx: c.x - W/2, dy: c.y - H/2, spacingPx: spacing*zoom};
     })() : null,
-    stickers: stickerList.map(s => ({key:s.key, rotation:s.rotation||0, rx:!!s.rx})),
+    stickers: stickerList.map(s => ({key:s.key, rotation:s.rotation||0, rx:!!s.rx, flip:!!s.flip, x:Math.round(s.wx), y:Math.round(s.wy)})),
   });
 
   applyCanvasSize();
