@@ -971,7 +971,7 @@
 
   let camX = 0;
   let camY = 0;
-  let zoom = 0.9;
+  let zoom = 0.75;
   let nodeList = []; // {i,j,wx,wy,r,strokeId} - world coordinates only; screen positions are
                      // derived from a view (see liveView / render) every time they are needed
   let nodeSet = new Set();
@@ -2093,12 +2093,67 @@
       }
       return out;
     };
+    const centreOf = a => ({ cx:(a.i0+a.i1)/2, cy:(a.j0+a.j1)/2, maxR:Math.min(a.i1-a.i0, a.j1-a.j0)/2 });
+    const rose = () => {                       // layered rose-curve flower
+      const a = subArea(0.8), {cx, cy, maxR} = centreOf(a), k = [2,3,4,5,6][ri(0,4)], layers = ri(1,3), strokes = [];
+      for(let L=0; L<layers; L++){
+        const R = maxR*(1 - L*0.32), off = L*Math.PI/(2*k), st = [];
+        for(let th=0; th<=2*Math.PI+0.02; th+=0.012){
+          const r = R*Math.abs(Math.cos(k*th));   // 2k petals
+          const i = Math.round(cx + r*Math.cos(th+off)), j = Math.round(cy + r*Math.sin(th+off));
+          if(inside(a,i,j)) st.push([i,j]);
+        }
+        if(st.length) strokes.push(st);
+      }
+      return strokes;
+    };
+    const daisy = () => {                      // a flower head: filled centre and a ring of petals
+      const a = subArea(0.85), {cx, cy, maxR} = centreOf(a), rc = Math.max(1.5, maxR*(0.14 + rnd()*0.1)), n = ri(8,16), strokes = [];
+      const row = (fn) => { for(let j=a.j0;j<=a.j1;j++){ const r = []; for(let i=a.i0;i<=a.i1;i++) if(fn(i,j)) r.push([i,j]); if(r.length) strokes.push(r); } };
+      row((i,j) => Math.hypot(i-cx, j-cy) <= rc);
+      const r0 = rc*1.5, len = (maxR - r0)/2, wid = Math.max(1.2, len*(0.28 + rnd()*0.2));
+      for(let p=0;p<n;p++){
+        const ang = 2*Math.PI*p/n, px = cx + Math.cos(ang)*(r0+len), py = cy + Math.sin(ang)*(r0+len), ca = Math.cos(ang), sa = Math.sin(ang);
+        row((i,j) => { const dx = i-px, dy = j-py, u = dx*ca + dy*sa, v = -dx*sa + dy*ca; return (u/len)**2 + (v/wid)**2 <= 1; });
+      }
+      return strokes;
+    };
+    const sunflower = () => {                  // seeds in a golden-angle spiral
+      const a = subArea(0.85), {cx, cy, maxR} = centreOf(a), n = ri(140,340), c = maxR/Math.sqrt(n), strokes = [];
+      for(let q=1;q<=n;q++){ const r = c*Math.sqrt(q), th = q*2.399963, i = Math.round(cx + r*Math.cos(th)), j = Math.round(cy + r*Math.sin(th)); if(inside(a,i,j)) strokes.push([[i,j]]); }
+      return strokes;
+    };
+    const garden = () => {                     // several small flowers, each a centre and a ring of round petals
+      const a = subArea(0.9), strokes = [], placed = [], count = ri(3,6);
+      const disc = (ci, cj, rr) => { const out = []; for(let j=Math.floor(cj-rr); j<=Math.ceil(cj+rr); j++) for(let i=Math.floor(ci-rr); i<=Math.ceil(ci+rr); i++) if(Math.hypot(i-ci, j-cj) <= rr + 0.3 && inside(a,i,j)) out.push([i,j]); return out; };
+      for(let f=0; f<count*10 && placed.length<count; f++){
+        const r = ri(4,8);
+        if(a.i1-a.i0 < 2*r+2 || a.j1-a.j0 < 2*r+2) continue;
+        const i = ri(a.i0+r, a.i1-r), j = ri(a.j0+r, a.j1-r);
+        if(placed.some(q => Math.hypot(q.i-i, q.j-j) < q.r + r + 1)) continue;
+        placed.push({i, j, r});
+        const petals = ri(5,8), pr = Math.max(1.2, r*0.33), d = r - pr;
+        strokes.push(disc(i, j, Math.max(1.3, r*0.25)));
+        for(let p=0;p<petals;p++){ const ang = 2*Math.PI*p/petals; strokes.push(disc(i + Math.cos(ang)*d, j + Math.sin(ang)*d, pr)); }
+      }
+      return strokes.filter(st => st.length);
+    };
+    const galaxy = () => {                     // spiral arms that open outwards
+      const a = subArea(0.85), {cx, cy, maxR} = centreOf(a), arms = ri(2,5), strokes = [], tight = 0.14 + rnd()*0.12, thMax = Math.log(maxR/1.5)/tight;
+      for(let k=0;k<arms;k++){
+        const st = [];
+        for(let th=0; th<=thMax; th+=0.03){ const r = 1.5*Math.exp(tight*th), ang = th + 2*Math.PI*k/arms, i = Math.round(cx + r*Math.cos(ang)), j = Math.round(cy + r*Math.sin(ang)); if(inside(a,i,j)) st.push([i,j]); }
+        if(st.length) strokes.push(st);
+      }
+      return strokes;
+    };
     // Isolated marks only make sense for Separate. In Blend they are just dots that never join.
     // Large, layered results are the goal (fields, mirrored shapes, big patches, many strokes);
     // plain scatter and ruled lines are rare. About a quarter of remixes layer two kinds.
-    const K = { field, mirrored, kaleido, patch, wander, scatter, lines, rings, waves, spiral, rays, bars };
-    const pool = look.blend ? ['field','field','mirrored','mirrored','kaleido','patch','patch','wander','wander','rings','waves','spiral','rays','lines']
-                            : ['field','field','mirrored','mirrored','kaleido','patch','patch','wander','wander','rings','waves','spiral','rays','bars','scatter','lines'];
+    const K = { field, mirrored, kaleido, patch, wander, scatter, lines, rings, waves, spiral, rays, bars, rose, daisy, sunflower, garden, galaxy };
+    const flowery = ['rose','rose','daisy','daisy','garden','garden','spiral','spiral','galaxy','galaxy'];   // spirals and flowers come up often
+    const pool = look.blend ? ['field','field','mirrored','mirrored','kaleido','patch','patch','wander','wander','rings','waves','rays','lines'].concat(flowery)
+                            : ['field','field','mirrored','mirrored','kaleido','patch','patch','wander','wander','rings','waves','rays','bars','scatter','lines'].concat(flowery);
     let kind = look.blend && look.sp > 36 ? 'mirrored' : pool[ri(0, pool.length-1)];
     let strokes = K[kind]();
     if(kind !== 'scatter' && !(look.blend && look.sp > 36) && rnd() < 0.25){
