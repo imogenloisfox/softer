@@ -1888,12 +1888,11 @@
   // spirals, two flower heads...). Each Remix first picks a kind other than the last one, then builds it.
   const REMIX_FAMILIES = {
     spiral:  ['spiral','spiral','galaxy'],
-    flower:  ['rose','daisy','sakura','sakura','lily','garden','sunflower'],
+    flower:  ['rose','daisy','sakura','sakura','lily','garden','sunflower','lotus','lotus','cosmos','hibiscus','hibiscus'],
     cymatic: ['cymatic'],
-    radial:  ['rings','rays','waves'],
-    wander:  ['wander','mirrored','kaleido'],
+    radial:  ['rings','waves'],
   };
-  const REMIX_CATS = [['word',0.27],['stickers',0.12],['spiral',0.17],['flower',0.20],['cymatic',0.10],['radial',0.08],['wander',0.06]];
+  const REMIX_CATS = [['word',0.24],['stickers',0.12],['spiral',0.16],['flower',0.32],['cymatic',0.08],['radial',0.08]];
   const remixCatOf = kind => {
     kind = String(kind || '');
     if(kind.startsWith('word')) return 'word';
@@ -1974,7 +1973,7 @@
     // A word is set in one of three styles: joined (Blend), separate and blobby (big dots that overlap
     // into a chunky outline), or plain separate dots.
     const wordStyle = wordy ? (rnd() < 0.4 ? 'blend' : rnd() < 0.65 ? 'blobby' : 'plain') : null;
-    const blend = !flower && (wordy ? wordStyle === 'blend' : rnd() < 0.22);
+    const blend = !flower && (wordy ? wordStyle === 'blend' : (rnd() < 0.3 && remixFamily === REMIX_FAMILIES.spiral));   // only spirals are joined into shapes: every other pattern stays as separate dots
     // a word needs a finer grid so its letters can be read
     const sp0 = wordy ? SPACING_MIN + Math.round(Math.pow(rnd(), 2) * 0.4 * (SPACING_MAX - SPACING_MIN))
                      : SPACING_MIN + Math.round(Math.pow(rnd(), 1.5) * (SPACING_MAX - SPACING_MIN));
@@ -2162,6 +2161,34 @@
       }
       return strokes;
     };
+    // more flower heads: all are ellipses laid round a centre, so the grid reads a clear flower
+    const petalRow = (a, strokes, fn) => { for(let j=a.j0;j<=a.j1;j++){ const r = []; for(let i=a.i0;i<=a.i1;i++) if(fn(i,j)) r.push([i,j]); if(r.length) strokes.push(r); } };
+    const petal = (a, strokes, cx, cy, ang, dist, len, wid) => {
+      const px = cx + Math.cos(ang)*dist, py = cy + Math.sin(ang)*dist, ca = Math.cos(ang), sa = Math.sin(ang);
+      petalRow(a, strokes, (i,j) => { const dx = i-px, dy = j-py, u = dx*ca + dy*sa, v = -dx*sa + dy*ca; return (u/len)**2 + (v/wid)**2 <= 1; });
+    };
+    const lotus = () => {                      // layers of pointed petals, each layer turned half a petal
+      const a = subArea(0.85), {cx, cy, maxR} = centreOf(a), layers = ri(2,3), n = ri(6,9), strokes = [];
+      petalRow(a, strokes, (i,j) => Math.hypot(i-cx, j-cy) <= Math.max(1.5, maxR*0.1));
+      for(let L=0; L<layers; L++){
+        const reach = maxR*(1 - L*0.3), r0 = maxR*0.14, len = (reach - r0)/2, wid = Math.max(1.1, len*0.3);
+        for(let p=0;p<n;p++) petal(a, strokes, cx, cy, 2*Math.PI*(p + 0.5*L)/n, r0+len, len, wid);
+      }
+      return strokes;
+    };
+    const cosmos = () => {                     // eight broad petals round an open ring
+      const a = subArea(0.85), {cx, cy, maxR} = centreOf(a), strokes = [], rc = Math.max(2, maxR*0.16), r0 = rc*1.5, len = (maxR - r0)/2, wid = len*0.62;
+      for(let p=0;p<8;p++) petal(a, strokes, cx, cy, 2*Math.PI*p/8, r0+len, len, wid);
+      petalRow(a, strokes, (i,j) => { const d = Math.hypot(i-cx, j-cy); return d <= rc*0.55; });
+      return strokes;
+    };
+    const hibiscus = () => {                   // five petals each turned, like a pinwheel, with a long stamen
+      const a = subArea(0.85), {cx, cy, maxR} = centreOf(a), n = ri(5,6), strokes = [], len = maxR*0.5, wid = len*0.6, tw = 0.45 + rnd()*0.3;
+      for(let p=0;p<n;p++){ const ang = 2*Math.PI*p/n; petal(a, strokes, cx, cy, ang + tw, maxR*0.45, len, wid); }
+      const st = []; for(let q=0; q<=maxR*0.9; q++){ const i = Math.round(cx + q*Math.cos(-0.8)), j = Math.round(cy + q*Math.sin(-0.8)); if(inside(a,i,j)) st.push([i,j]); }
+      if(st.length) strokes.push(st);
+      return strokes;
+    };
     const sunflower = () => {                  // seeds in a golden-angle spiral
       const a = subArea(0.85), {cx, cy, maxR} = centreOf(a), n = ri(140,340), c = maxR/Math.sqrt(n), strokes = [];
       for(let q=1;q<=n;q++){ const r = c*Math.sqrt(q), th = q*2.399963, i = Math.round(cx + r*Math.cos(th)), j = Math.round(cy + r*Math.sin(th)); if(inside(a,i,j)) strokes.push([[i,j]]); }
@@ -2194,14 +2221,14 @@
     // ---- cymatic patterns: the nodal lines and standing waves of a vibrating plate ----
     const besselJ = (n, x) => { let s = 0; const N = 24; for(let q=0;q<=N;q++){ const t = Math.PI*q/N, v = Math.cos(n*t - x*Math.sin(t)); s += (q===0||q===N ? 0.5 : 1)*v; } return s/N; };
     const cymatic = () => {
-      const a = subArea(0.9), w = a.i1-a.i0+1, h = a.j1-a.j0+1, cx = (a.i0+a.i1)/2, cy = (a.j0+a.j1)/2, S = Math.max(4, Math.min(w, h)/2), mode = ri(0,2), rows = [];
+      const a = subArea(0.9), w = a.i1-a.i0+1, h = a.j1-a.j0+1, cx = (a.i0+a.i1)/2, cy = (a.j0+a.j1)/2, S = Math.max(4, Math.min(w, h)/2), mode = 1, rows = [];   // round plates only: the square and Faraday figures came out speckled
       let f, keep;
       if(mode === 0){            // a square plate (Chladni figure): sand collects along the lines where cos(n x)cos(m y) = cos(m x)cos(n y)
-        const n = ri(1,5), m = ri(n+1, 8), t = 0.4 + rnd()*0.35;
+        const n = ri(1,3), m = ri(n+1, 5), t = 0.4 + rnd()*0.35;
         f = (i,j) => { const u = (i-cx)/S*0.5+0.5, v = (j-cy)/S*0.5+0.5; return (u<0||u>1||v<0||v>1) ? NaN : Math.cos(n*Math.PI*u)*Math.cos(m*Math.PI*v) - Math.cos(m*Math.PI*u)*Math.cos(n*Math.PI*v); };
         keep = (i,j) => { const v0 = f(i,j); if(Number.isNaN(v0)) return false; const gx = (f(i+1,j)-f(i-1,j))/2, gy = (f(i,j+1)-f(i,j-1))/2, g = Math.hypot(isNaN(gx)?0:gx, isNaN(gy)?0:gy); return g > 1e-6 && Math.abs(v0)/g <= t; };
       } else if(mode === 1){     // a round plate: Bessel rings broken by radial lines
-        const n = ri(2,9), k = (4 + rnd()*7)/S*Math.PI, t = 0.5 + rnd()*0.6;
+        const n = ri(3,7), k = (3 + rnd()*3.5)/S*Math.PI, t = 0.5 + rnd()*0.6;
         f = (i,j) => { const dx = i-cx, dy = j-cy, r = Math.hypot(dx,dy); return r > S ? NaN : besselJ(n, k*r) * Math.cos(n*Math.atan2(dy,dx)); };
         keep = (i,j) => { const v0 = f(i,j); if(Number.isNaN(v0)) return false; const gx = (f(i+1,j)-f(i-1,j))/2, gy = (f(i,j+1)-f(i,j-1))/2, g = Math.hypot(isNaN(gx)?0:gx, isNaN(gy)?0:gy); return g > 1e-6 && Math.abs(v0)/g <= t; };
       } else {                   // Faraday waves: several plane waves crossing, ink where they add up
@@ -2267,13 +2294,13 @@
     // Isolated marks only make sense for Separate. In Blend they are just dots that never join.
     // Large, layered results are the goal (fields, mirrored shapes, big patches, many strokes);
     // plain scatter and ruled lines are rare. About a quarter of remixes layer two kinds.
-    const K = { field, mirrored, kaleido, patch, wander, scatter, lines, rings, waves, spiral, rays, rose, daisy, sunflower, garden, galaxy, cymatic, sakura, lily };
-    const flowery = ['rose','rose','daisy','daisy','sakura','sakura','sakura','lily','garden','spiral','spiral','spiral','spiral','galaxy','galaxy','galaxy','galaxy'];   // flower heads and spirals come up most
-    const pool = look.blend ? ['mirrored','mirrored','kaleido','wander','wander','rings','waves','rays','cymatic','cymatic','cymatic'].concat(flowery)
-                            : ['mirrored','mirrored','kaleido','wander','wander','rings','waves','rays','scatter','cymatic','cymatic','cymatic'].concat(flowery);
+    const K = { field, mirrored, kaleido, patch, wander, scatter, lines, rings, waves, spiral, rays, rose, daisy, sunflower, garden, galaxy, cymatic, sakura, lily, lotus, cosmos, hibiscus };
+    const flowery = ['rose','rose','daisy','daisy','sakura','sakura','sakura','lily','garden','lotus','cosmos','hibiscus','spiral','spiral','spiral','spiral','galaxy','galaxy','galaxy','galaxy'];   // flower heads and spirals come up most
+    const pool = look.blend ? ['rings','waves','cymatic','cymatic','cymatic'].concat(flowery)
+                            : ['rings','waves','cymatic','cymatic','cymatic'].concat(flowery);
     let kind = remixFamily ? remixFamily[ri(0, remixFamily.length-1)] : pool[ri(0, pool.length-1)];
     let strokes = K[kind]();
-    if(kind !== 'scatter' && !look.blend && rnd() < 0.25){
+    if(kind !== 'scatter' && !look.blend && rnd() < 0.12){
       const opts = pool.filter(k => k !== kind && k !== 'scatter'), other = opts[ri(0, opts.length-1)];
       strokes = strokes.concat(K[other]()); kind = kind + '+' + other;
     }
