@@ -1849,6 +1849,7 @@
   const REMIX_DARK  = ['#FF3B0F','#7C7C7C'];
   const REMIX_TRIES = 160;
   const REMIX_WORDS = ['soft','softer','softness'];
+  const REMIX_FONT_PRIORITY = ['Font 05','Font 09','Font 13','Font 14','Font 15','Font 16'];   // shown more often in Remix
   const REMIX_WORD_CHANCE = 0.3;              // how often a remix is a typed word instead of a pattern
   const REMIX_SCALE = 0.25;                   // candidates are measured at a quarter of the size
   const DIRS8 = [[1,0],[1,1],[0,1],[-1,1],[-1,0],[-1,-1],[0,-1],[1,-1]];
@@ -1883,6 +1884,30 @@
     remixLive.sig = remixSig();
   }
   let remixPrev = { kind:null, ink:null, mask:null };   // the previous Remix, so the next one looks different
+  // Remix cycles through kinds of result: it never gives the same kind twice running (two words, two
+  // spirals, two flower heads...). Each Remix first picks a kind other than the last one, then builds it.
+  const REMIX_FAMILIES = {
+    spiral:  ['spiral','spiral','galaxy'],
+    flower:  ['rose','daisy','sakura','sakura','lily','garden','sunflower'],
+    cymatic: ['cymatic'],
+    radial:  ['rings','rays','waves'],
+    wander:  ['wander','mirrored','kaleido'],
+  };
+  const REMIX_CATS = [['word',0.27],['stickers',0.12],['spiral',0.17],['flower',0.20],['cymatic',0.10],['radial',0.08],['wander',0.06]];
+  const remixCatOf = kind => {
+    kind = String(kind || '');
+    if(kind.startsWith('word')) return 'word';
+    if(kind.startsWith('stickers')) return 'stickers';
+    const first = kind.split('+')[0];
+    for(const f in REMIX_FAMILIES) if(REMIX_FAMILIES[f].includes(first)) return f;
+    return first;
+  };
+  let remixPrevCat = null, remixForceCat = null, remixFamily = null;
+  function remixPickCat(rnd, not){
+    const opts = REMIX_CATS.filter(([c]) => c !== not), total = opts.reduce((a,[,w]) => a+w, 0);
+    let r = rnd()*total; for(const [c,w] of opts){ if((r -= w) < 0) return c; }
+    return opts[0][0];
+  }
   const remixKindOf = (nodes, word) => word ? 'word:'+word.text+':'+word.font : (nodes && nodes.kind) || '';
   function remixOverlap(m){   // how much of the new ink sits where the last remix's ink was (0 to 1)
     const a = m.mask, b = remixPrev.mask;
@@ -1890,6 +1915,22 @@
     let both = 0, either = 0;
     for(let i=0;i<a.length;i++){ if(a[i] && b[i]) both++; if(a[i] || b[i]) either++; }
     return either ? both/either : 0;
+  }
+  // How crowded a pattern is: the average number of occupied neighbours (of 8) per dot. A solid
+  // mass is near 8, thin lines near 2. Blend suits clear designs with open holes, so a crowded
+  // pattern is shown as Separate dots instead.
+  const REMIX_CROWD_MAX = 5.6;
+  function remixCrowd(nodes){
+    const have = new Set(nodes.map(n => n.i+'_'+n.j));
+    let total = 0;
+    for(const n of nodes) for(const [dx,dy] of DIRS8) if(have.has((n.i+dx)+'_'+(n.j+dy))) total++;
+    return total / Math.max(1, nodes.length);
+  }
+  function remixAdapt(look, nodes, rnd){
+    if(!look.blend || remixCrowd(nodes) <= REMIX_CROWD_MAX) return;
+    look.blend = false;
+    look.size = look.sizeFor(look.sp, 0.36 + rnd()*0.14, false);
+    for(const n of nodes) n.r = look.size;
   }
   function remixSimilar(look, nodes, m, word){   // same pattern kind, same ink, or nearly the same shape as last time
     return remixKindOf(nodes, word) === remixPrev.kind || look.ink.join() === remixPrev.ink || remixOverlap(m) > 0.45;
@@ -1911,30 +1952,50 @@
     // apart everywhere. Most of the remixes people loved used a gradient somewhere, and when the
     // ink is dark it is usually the brand pair red to grey, so gradients are common and that pair
     // is favoured.
-    const inkDark = rnd() < 0.5;
-    const inkSet = inkDark ? REMIX_DARK : REMIX_LIGHT, bgSet = inkDark ? REMIX_LIGHT : REMIX_DARK;
-    const grad = (set, brandPair) => {
-      if(set === REMIX_DARK && rnd() < brandPair) return rnd() < 0.5 ? ['#FF3B0F','#7C7C7C'] : ['#7C7C7C','#FF3B0F'];
-      return two(set);
-    };
+    // Every swatch is a candidate for both ink and background, and every pair is equally likely
+    // for a gradient: none is favoured. The only filter is contrast, so ink and background are
+    // always clearly apart in lightness (average and at every pair of ends).
+    const ALL = REMIX_LIGHT.concat(REMIX_DARK);
+    const lum = hex => { const n = parseInt(hex.slice(1), 16); return 0.299*(n>>16) + 0.587*((n>>8)&255) + 0.114*(n&255); };
+    const avgLum = a => a.reduce((s,c) => s + lum(c), 0) / a.length;
     const inkGradient = rnd() < 0.45, bgGradient = rnd() < 0.35;
+    // The ink is drawn uniformly (every swatch, every ordered pair), then the background is drawn
+    // uniformly from the options that contrast with it, so a gradient that has fewer partners
+    // (pink to grey) comes up as often as one that has many.
+    const contrasts = (ink, bg) => Math.abs(avgLum(ink) - avgLum(bg)) >= 60 && ink.every(i => bg.every(b => Math.abs(lum(i) - lum(b)) >= 40));
+    const bgOptions = bgGradient ? ALL.flatMap(x => ALL.filter(y => y !== x).map(y => [x, y])) : ALL.map(c => [c]);
+    let inkCols = null, bgCols = null;
+    for(let g=0; g<400 && !inkCols; g++){
+      const ink = inkGradient ? two(ALL) : [pick(ALL)], fits = bgOptions.filter(bg => contrasts(ink, bg));
+      if(fits.length){ inkCols = ink; bgCols = pick(fits); }
+    }
+    if(!inkCols){ inkCols = [pick(REMIX_LIGHT)]; bgCols = [pick(REMIX_DARK)]; }   // cannot happen in practice
     const flower = !wordy && rnd() < 0.25;   // flowers are too fine to spell with                // Flower cannot Blend
-    const blend = !flower && rnd() < (wordy ? 0.75 : 0.3);   // thin letters read best when joined
+    // A word is set in one of three styles: joined (Blend), separate and blobby (big dots that overlap
+    // into a chunky outline), or plain separate dots.
+    const wordStyle = wordy ? (rnd() < 0.4 ? 'blend' : rnd() < 0.65 ? 'blobby' : 'plain') : null;
+    const blend = !flower && (wordy ? wordStyle === 'blend' : rnd() < 0.22);
     // a word needs a finer grid so its letters can be read
-    const sp0 = wordy ? SPACING_MIN + Math.round(Math.pow(rnd(), 2) * 0.5 * (SPACING_MAX - SPACING_MIN))
+    const sp0 = wordy ? SPACING_MIN + Math.round(Math.pow(rnd(), 2) * 0.4 * (SPACING_MAX - SPACING_MIN))
                      : SPACING_MIN + Math.round(Math.pow(rnd(), 1.5) * (SPACING_MAX - SPACING_MIN));
     // Blend on a coarse grid only gives a few huge smooth lumps with no detail, so Blend stays on a fine grid
-    const sp = Math.min(sp0, REMIX_SP_CAP, blend ? REMIX_BLEND_SP_MAX : 99);
-    // Blend needs nodes big enough that neighbouring cells join (about 0.7 of the spacing for
-    // side neighbours, 1.0 for diagonals) but not so big the shapes clog. Separate needs them
-    // small enough not to touch. This is a choice inside Remix only: the two sliders stay
-    // independent (SPEC §3).
-    const ratio = blend ? 0.7 + rnd()*0.35 : (wordy ? 0.42 + rnd()*0.1 : 0.36 + rnd()*0.14);
+    // Node size limits as a share of the Node size slider (5 to 75): Blend stays between 1% and
+    // 20% (so the dots are small and the holes stay open), and a typed word may go up to 40% as
+    // long as it stays readable. Blend needs the dots to reach their neighbours (about 0.7 of
+    // the spacing), so the grid is kept fine enough for that.
+    const sizeAt = f => Math.round(5 + f*(75 - 5));
+    const BLEND_SIZE_MIN = sizeAt(0.01), BLEND_SIZE_MAX = sizeAt(0.20), WORD_SIZE_MAX = sizeAt(0.40);
+    const spLimit = blend && !wordy ? Math.min(REMIX_BLEND_SP_MAX, Math.floor(BLEND_SIZE_MAX / 0.72)) : 99;
+    const sp = Math.min(sp0, REMIX_SP_CAP, spLimit);
+    const ratio = blend ? 0.7 + rnd()*0.35 : (wordy ? (wordStyle === 'blobby' ? 0.85 + rnd()*0.4 : 0.42 + rnd()*0.1) : 0.36 + rnd()*0.14);
+    const sizeFor = (spacing, r, isBlend) => isBlend && !wordy ? Math.max(BLEND_SIZE_MIN, Math.min(BLEND_SIZE_MAX, Math.round(spacing*r)))
+                                          : wordy ? Math.max(5, Math.min(WORD_SIZE_MAX, Math.round(spacing*r)))
+                                          : Math.max(5, Math.min(REMIX_SIZE_CAP, Math.round(spacing*r)));
     return {
-      bg:  bgGradient  ? grad(bgSet, 0.6)  : [pick(bgSet)],
-      ink: inkGradient ? grad(inkSet, 0.7) : [pick(inkSet)],
+      bg:  bgCols,
+      ink: inkCols,
       flower, blend, sp,
-      size: Math.max(5, Math.min(REMIX_SIZE_CAP, Math.round(sp*ratio))),
+      size: sizeFor(sp, ratio, blend), sizeFor,
     };
   }
 
@@ -2065,15 +2126,6 @@
       }
       return strokes;
     };
-    const bars = () => {                       // a skyline of bars
-      const a = subArea(0.8), w = ri(1,3), gap = ri(1,2), mid = rnd() < 0.4, strokes = [], hh = a.j1-a.j0+1;
-      for(let i=a.i0;i<=a.i1;i+=w+gap){
-        const h = ri(2, hh), j0 = mid ? a.j0 + Math.floor((hh-h)/2) : a.j1-h+1, st = [];
-        for(let x=0;x<w;x++) for(let j=j0;j<j0+h;j++) if(i+x<=a.i1) st.push([i+x,j]);
-        strokes.push(st);
-      }
-      return strokes;
-    };
     const kaleido = () => {                    // wandering strokes mirrored left/right and top/bottom
       const a = subArea(0.9), ax = (a.i0+a.i1)/2, ay = (a.j0+a.j1)/2, out = [];
       const quarter = {i0:a.i0, i1:Math.floor(ax), j0:a.j0, j1:Math.floor(ay)};
@@ -2139,17 +2191,90 @@
       }
       return strokes;
     };
+    // ---- cymatic patterns: the nodal lines and standing waves of a vibrating plate ----
+    const besselJ = (n, x) => { let s = 0; const N = 24; for(let q=0;q<=N;q++){ const t = Math.PI*q/N, v = Math.cos(n*t - x*Math.sin(t)); s += (q===0||q===N ? 0.5 : 1)*v; } return s/N; };
+    const cymatic = () => {
+      const a = subArea(0.9), w = a.i1-a.i0+1, h = a.j1-a.j0+1, cx = (a.i0+a.i1)/2, cy = (a.j0+a.j1)/2, S = Math.max(4, Math.min(w, h)/2), mode = ri(0,2), rows = [];
+      let f, keep;
+      if(mode === 0){            // a square plate (Chladni figure): sand collects along the lines where cos(n x)cos(m y) = cos(m x)cos(n y)
+        const n = ri(1,5), m = ri(n+1, 8), t = 0.4 + rnd()*0.35;
+        f = (i,j) => { const u = (i-cx)/S*0.5+0.5, v = (j-cy)/S*0.5+0.5; return (u<0||u>1||v<0||v>1) ? NaN : Math.cos(n*Math.PI*u)*Math.cos(m*Math.PI*v) - Math.cos(m*Math.PI*u)*Math.cos(n*Math.PI*v); };
+        keep = (i,j) => { const v0 = f(i,j); if(Number.isNaN(v0)) return false; const gx = (f(i+1,j)-f(i-1,j))/2, gy = (f(i,j+1)-f(i,j-1))/2, g = Math.hypot(isNaN(gx)?0:gx, isNaN(gy)?0:gy); return g > 1e-6 && Math.abs(v0)/g <= t; };
+      } else if(mode === 1){     // a round plate: Bessel rings broken by radial lines
+        const n = ri(2,9), k = (4 + rnd()*7)/S*Math.PI, t = 0.5 + rnd()*0.6;
+        f = (i,j) => { const dx = i-cx, dy = j-cy, r = Math.hypot(dx,dy); return r > S ? NaN : besselJ(n, k*r) * Math.cos(n*Math.atan2(dy,dx)); };
+        keep = (i,j) => { const v0 = f(i,j); if(Number.isNaN(v0)) return false; const gx = (f(i+1,j)-f(i-1,j))/2, gy = (f(i,j+1)-f(i,j-1))/2, g = Math.hypot(isNaN(gx)?0:gx, isNaN(gy)?0:gy); return g > 1e-6 && Math.abs(v0)/g <= t; };
+      } else {                   // Faraday waves: several plane waves crossing, ink where they add up
+        const N = ri(4,9), k = (3 + rnd()*5)*Math.PI/S, ph = rnd()*6.28, cut = 0.45 + rnd()*0.25;
+        f = (i,j) => { let s = 0; for(let q=0;q<N;q++){ const ang = Math.PI*q/N; s += Math.cos(k*((i-cx)*Math.cos(ang) + (j-cy)*Math.sin(ang)) + ph); } return s/N; };
+        keep = (i,j) => Math.hypot(i-cx, j-cy) <= S && f(i,j) > cut;
+      }
+      for(let j=a.j0;j<=a.j1;j++){ const row = []; for(let i=a.i0;i<=a.i1;i++) if(keep(i,j)) row.push([i,j]); if(row.length) rows.push(row); }
+      return rows;
+    };
+    // ---- flower heads from dots: sakura (cherry blossom) and lily of the valley ----
+    const cellsWhere = (a, cx, cy, reach, fn) => { const out = []; for(let j=Math.floor(cy-reach); j<=Math.ceil(cy+reach); j++) for(let i=Math.floor(cx-reach); i<=Math.ceil(cx+reach); i++) if(inside(a,i,j) && fn(i-cx, j-cy)) out.push([i,j]); return out; };
+    const ellAt = (a, cx, cy, rx, ry, ang) => { const c = Math.cos(ang), s = Math.sin(ang); return cellsWhere(a, cx, cy, Math.max(rx,ry)+1, (dx,dy) => { const u = dx*c + dy*s, v = -dx*s + dy*c; return (u/rx)**2 + (v/ry)**2 <= 1; }); };
+    const sakuraPetal = (a, cx, cy, R, ang) => {               // one cherry petal: a wide blade with a notch cut in its tip
+      const c = Math.cos(ang), s = Math.sin(ang), len = 0.5*R, wid = 0.3*R, mid = 0.5*R;
+      const cells = cellsWhere(a, cx + c*mid, cy + s*mid, Math.max(len,wid)+1, (dx,dy) => { const u = dx*c + dy*s, v = -dx*s + dy*c; return (u/len)**2 + (v/wid)**2 <= 1; });
+      const nx = cx + c*R*0.98, ny = cy + s*R*0.98, nr = Math.max(0.9, 0.1*R);   // the notch
+      return cells.filter(([i,j]) => Math.hypot(i-nx, j-ny) > nr);
+    };
+    const sakuraHead = (a, cx, cy, R, rot) => {                // five notched petals round a centre of stamens
+      const P = [];
+      for(let p=0;p<5;p++) P.push(sakuraPetal(a, cx, cy, R, rot + 2*Math.PI*p/5));
+      const hole = Math.max(1.3, 0.13*R), cut = new Set(cellsWhere(a, cx, cy, hole+1, (dx,dy) => Math.hypot(dx,dy) <= hole).map(([i,j]) => i+'_'+j));
+      const out = P.map(st => st.filter(([i,j]) => !cut.has(i+'_'+j))).filter(st => st.length);
+      const stamens = [[Math.round(cx), Math.round(cy)]];                                  // a centre dot and a ring of stamens
+      for(let q=0;q<5;q++){ const ang = rot + Math.PI/5 + 2*Math.PI*q/5, d = hole + 1.2; const i = Math.round(cx + Math.cos(ang)*d), j = Math.round(cy + Math.sin(ang)*d); if(inside(a,i,j)) stamens.push([i,j]); }
+      out.push(stamens.filter(([i,j]) => inside(a,i,j)));
+      return out;
+    };
+    const sakura = () => {                     // a large blossom, a flowering branch, or a blossom with petals falling
+      const a = subArea(0.9), {cx, cy, maxR} = centreOf(a), mode = ri(0,2), strokes = [];
+      if(mode === 0 || maxR < 11) return sakuraHead(a, cx, cy, maxR*(0.85+rnd()*0.15), rnd()*Math.PI*2);
+      if(mode === 1){                          // a branch with blossoms and buds
+        const dir = rnd()<0.5 ? 1 : -1, n = ri(2,3), bx = cx - dir*maxR*0.8, by = a.j1 - 1, pts = [];
+        for(let t=0;t<=1.0001;t+=0.01){ const u = 1-t; pts.push([u*u*u*bx + 3*u*u*t*(bx+dir*maxR*0.3) + 3*u*t*t*(cx) + t*t*t*(cx+dir*maxR*0.85), u*u*u*by + 3*u*u*t*(by-maxR*0.2) + 3*u*t*t*(cy+maxR*0.5) + t*t*t*(a.j0+maxR*0.55)]); }
+        strokes.push(pts.map(([x,y]) => [Math.round(x), Math.round(y)]).filter(([i,j]) => inside(a,i,j)));
+        for(let q=0;q<n;q++){ const t = 0.4 + 0.58*q/(n-1 || 1), p = pts[Math.min(pts.length-1, Math.floor(t*(pts.length-1)))], R = maxR*(0.5 - q*0.1);
+          strokes.push(...sakuraHead(a, p[0], p[1] - R*0.3, R, rnd()*Math.PI*2));
+          if(q < n-1) strokes.push(ellAt(a, p[0] - dir*R*0.9, p[1] + R*0.5, Math.max(1.2, R*0.18), Math.max(1.2, R*0.18), 0)); }       // a bud
+        return strokes.filter(st => st.length);
+      }
+      const c0 = [cx - maxR*0.15, cy - maxR*0.15], R = maxR*0.6;           // a blossom with loose petals drifting down
+      strokes.push(...sakuraHead(a, c0[0], c0[1], R, rnd()*Math.PI*2));
+      for(let q=0, n=ri(4,7); q<n; q++){ const px = a.i0 + 2 + rnd()*(a.i1-a.i0-4), py = c0[1] + R*0.9 + rnd()*(a.j1-c0[1]-R*0.9-2), r = Math.max(2.2, R*(0.22 + rnd()*0.12)); strokes.push(sakuraPetal(a, px, py, r*1.6, rnd()*Math.PI*2)); }
+      return strokes.filter(st => st.length);
+    };
+    const lily = () => {                       // lily of the valley: an arching stem of hanging bells with two broad leaves
+      const a = subArea(0.9), {cx, cy, maxR} = centreOf(a), dir = rnd()<0.5 ? 1 : -1, strokes = [];
+      const bx = cx - dir*maxR*0.45, by = a.j1, ex = cx + dir*maxR*0.85, ey = a.j0 + maxR*0.55;
+      const pts = [];
+      for(let t=0;t<=1.0001;t+=0.008){ const u = 1-t; pts.push([u*u*u*bx + 3*u*u*t*(bx) + 3*u*t*t*(cx+dir*maxR*0.1) + t*t*t*ex, u*u*u*by + 3*u*u*t*(a.j0-1) + 3*u*t*t*(a.j0-2) + t*t*t*ey]); }
+      strokes.push(pts.map(([x,y]) => [Math.round(x), Math.round(y)]).filter(([i,j]) => inside(a,i,j)));
+      const n = ri(4,6);
+      for(let q=0;q<n;q++){ const t = 0.4 + 0.58*q/(n-1), p = pts[Math.min(pts.length-1, Math.floor(t*(pts.length-1)))], r = Math.max(1.5, maxR*(0.17 - 0.06*q/(n-1)));
+        const hx = p[0] + dir*r*0.5, hy = p[1] + r*1.5;                                  // the bell hangs just below its stalk
+        strokes.push(ellAt(a, hx, hy, r*0.95, r, 0));
+        strokes.push(cellsWhere(a, p[0], p[1], r*1.6, (dx,dy) => Math.abs(dx - dir*r*0.5*(dy/(r*1.5))) < 0.6 && dy >= 0 && dy <= r*1.5));   // its stalk
+        for(const s of [-1,0,1]) strokes.push(ellAt(a, hx + s*r*0.7, hy + r*0.95, Math.max(0.6, r*0.28), Math.max(0.6, r*0.28), 0));   // the flared rim
+      }
+      for(const s of [-1,1]) strokes.push(ellAt(a, bx + s*maxR*0.28, by - maxR*0.38, maxR*0.2, maxR*0.5, s*0.5));   // two leaves
+      return strokes.filter(st => st.length);
+    };
     // Isolated marks only make sense for Separate. In Blend they are just dots that never join.
     // Large, layered results are the goal (fields, mirrored shapes, big patches, many strokes);
     // plain scatter and ruled lines are rare. About a quarter of remixes layer two kinds.
-    const K = { field, mirrored, kaleido, patch, wander, scatter, lines, rings, waves, spiral, rays, bars, rose, daisy, sunflower, garden, galaxy };
-    const flowery = ['rose','rose','daisy','daisy','garden','garden','spiral','spiral','galaxy','galaxy'];   // spirals and flowers come up often
-    const pool = look.blend ? ['field','field','mirrored','mirrored','kaleido','patch','patch','wander','wander','rings','waves','rays','lines'].concat(flowery)
-                            : ['field','field','mirrored','mirrored','kaleido','patch','patch','wander','wander','rings','waves','rays','bars','scatter','lines'].concat(flowery);
-    let kind = look.blend && look.sp > 36 ? 'mirrored' : pool[ri(0, pool.length-1)];
+    const K = { field, mirrored, kaleido, patch, wander, scatter, lines, rings, waves, spiral, rays, rose, daisy, sunflower, garden, galaxy, cymatic, sakura, lily };
+    const flowery = ['rose','rose','daisy','daisy','sakura','sakura','sakura','lily','garden','spiral','spiral','spiral','spiral','galaxy','galaxy','galaxy','galaxy'];   // flower heads and spirals come up most
+    const pool = look.blend ? ['mirrored','mirrored','kaleido','wander','wander','rings','waves','rays','cymatic','cymatic','cymatic'].concat(flowery)
+                            : ['mirrored','mirrored','kaleido','wander','wander','rings','waves','rays','scatter','cymatic','cymatic','cymatic'].concat(flowery);
+    let kind = remixFamily ? remixFamily[ri(0, remixFamily.length-1)] : pool[ri(0, pool.length-1)];
     let strokes = K[kind]();
-    if(kind !== 'scatter' && !(look.blend && look.sp > 36) && rnd() < 0.25){
-      const opts = pool.filter(k => k !== kind && k !== 'scatter' && k !== 'bars'), other = opts[ri(0, opts.length-1)];
+    if(kind !== 'scatter' && !look.blend && rnd() < 0.25){
+      const opts = pool.filter(k => k !== kind && k !== 'scatter'), other = opts[ri(0, opts.length-1)];
       strokes = strokes.concat(K[other]()); kind = kind + '+' + other;
     }
 
@@ -2183,8 +2308,11 @@
   async function remixPickWord(rnd){
     const text = REMIX_WORDS[Math.floor(rnd()*REMIX_WORDS.length)].replace(' ', '\n');   // two words stack
     const fonts = Array.from(fontSelect.options).map(o => o.value).filter(f => FONT_COVERAGE[f]);
+    const pri = fonts.filter(f => REMIX_FONT_PRIORITY.includes(f));
     for(let k=0; k<6 && fonts.length; k++){
-      const font = fonts.splice(Math.floor(rnd()*fonts.length), 1)[0];
+      const src = (pri.length && rnd() < 0.55) ? pri : fonts;      // the favourite fonts come up more often
+      const font = src.splice(Math.floor(rnd()*src.length), 1)[0];
+      if(src === pri){ const at = fonts.indexOf(font); if(at >= 0) fonts.splice(at, 1); }
       if(unsupportedChars(text, font).length) continue;
       if(!(await loadTextFont(font))) continue;
       return { text, font, canvas: renderTextToCanvas(text, font), longest: Math.max(...text.split('\n').map(l => l.length)) };
@@ -2204,27 +2332,40 @@
     const t = tmp.getContext('2d', {willReadFrequently:true});
     t.fillStyle = '#fff'; t.fillRect(0,0,dw,dh); t.imageSmoothingQuality = 'high';
     t.drawImage(downsampleProgressive(img, dw, dh), 0, 0, dw, dh);
-    const d = t.getImageData(0,0,dw,dh).data, hits = [];
-    let minI=Infinity, maxI=-Infinity, minJ=Infinity, maxJ=-Infinity, ideal=0;
-    for(let y=0;y<dh;y++) for(let x=0;x<dw;x++){
-      const q = (y*dw+x)*4;
-      ideal += 1 - (0.299*d[q] + 0.587*d[q+1] + 0.114*d[q+2]) / 255;
-      if(0.299*d[q] + 0.587*d[q+1] + 0.114*d[q+2] < 128){
-        hits.push([x,y]); if(x<minI) minI=x; if(x>maxI) maxI=x; if(y<minJ) minJ=y; if(y>maxJ) maxJ=y;
+    const d = t.getImageData(0,0,dw,dh).data, letters = w.text.replace(/\s/g,'').length;
+    let ideal = 0;
+    const dark = new Float32Array(dw*dh);
+    for(let q=0;q<dw*dh;q++){ const lum = 0.299*d[q*4] + 0.587*d[q*4+1] + 0.114*d[q*4+2]; dark[q] = lum; ideal += 1 - lum/255; }
+    // Read the word off the grid. Thin script fonts lose their strokes at 128, so if the plain read
+    // is too thin or falls apart, read it again with a lighter cut and one cell of body added.
+    const read = (thr, grow) => {
+      let set = new Set();
+      for(let y=0;y<dh;y++) for(let x=0;x<dw;x++) if(dark[y*dw+x] < thr) set.add(x+'_'+y);
+      if(grow){
+        const fat = new Set(set);
+        for(const k of set){ const [x,y] = k.split('_').map(Number);
+          for(let ax=-1;ax<=1;ax++) for(let ay=-1;ay<=1;ay++){ const nx=x+ax, ny=y+ay; if(nx>=0&&ny>=0&&nx<dw&&ny<dh) fat.add(nx+'_'+ny); } }
+        set = fat;
       }
-    }
-    if(hits.length < 12 || hits.length < 0.8*ideal) return null;
-    { // letters that shatter into many pieces (thin or slanted fonts) are not readable
-      const left = new Set(hits.map(([x,y]) => x+'_'+y)); let parts = 0;
+      const hits = Array.from(set, k => k.split('_').map(Number));
+      let minI=Infinity, maxI=-Infinity, minJ=Infinity, maxJ=-Infinity;
+      for(const [x,y] of hits){ if(x<minI) minI=x; if(x>maxI) maxI=x; if(y<minJ) minJ=y; if(y>maxJ) maxJ=y; }
+      const left = new Set(set); let parts = 0;
       for(const k of Array.from(left)){
         if(!left.has(k)) continue; parts++; const stack=[k]; left.delete(k);
         while(stack.length){ const [x,y] = stack.pop().split('_').map(Number);
           for(let ax=-1;ax<=1;ax++) for(let ay=-1;ay<=1;ay++){ const q=(x+ax)+'_'+(y+ay); if(left.has(q)){ left.delete(q); stack.push(q); } } }
       }
-      const letters = w.text.replace(/\s/g,'').length;
-      if(parts > letters*1.5 + 1) return null;
-      if((maxI-minI+1) / Math.max(1, maxJ-minJ+1) < 0.45*letters) return null;   // a word set as tall slanted strokes is not a row of letters
-    }
+      const good = hits.length >= 12 && hits.length >= 0.8*ideal && parts <= letters*1.5 + 1;
+      return { hits, minI, maxI, minJ, maxJ, good, parts };
+    };
+    let got = read(128, false);
+    let grown = false;
+    if(!got.good){ got = read(205, true); grown = true; }
+    if(!got.good) return null;
+    if(grown && look.size > 0.62*look.sp) return null;   // thin script lettering is not set in big overlapping dots: it blurs into a blob
+    const hits = got.hits; let { minI, maxI, minJ, maxJ } = got;
+    if((maxI-minI+1) / Math.max(1, maxJ-minJ+1) < 0.28*letters) return null;   // a word set as tall slanted strokes is not a row of letters
    // thin or slanted strokes fall apart on a grid, so such a font is not used
     if(dw / w.longest < 8){      // strokes only a cell wide are too thin to see: thicken them by one cell
       const have = new Set(hits.map(([x,y]) => x+'_'+y));
@@ -2258,6 +2399,21 @@
       const img = pctx.getImageData(0,0,w,h);
       for(let i=0;i<mask.length;i++) mask[i] = img.data[i*4+3] > 128 ? 1 : 0;
     }
+    // How much of a Blend shape is a solid mass: erode it by about a stroke and see what is left.
+    // Clean line work disappears under that; a filled core (a spiral or rose whose lines merged) stays.
+    let core = 0;
+    if(look.blend && pts.length){
+      const e = Math.max(2, Math.round(1.5*pts[0].r)), tmpA = new Uint8Array(w*h), tmpB = new Uint8Array(w*h);
+      for(let y=0;y<h;y++){ let run = 0; for(let x=0;x<w;x++){ run = mask[y*w+x] ? run+1 : 0; tmpA[y*w+x] = run >= 1 ? 1 : 0; }
+        // horizontal erosion: a pixel stays if the whole window [x-e, x+e] is ink
+        const pre = new Int32Array(w+1); for(let x=0;x<w;x++) pre[x+1] = pre[x] + mask[y*w+x];
+        for(let x=0;x<w;x++){ const a = x-e, b = x+e; tmpA[y*w+x] = (a>=0 && b<w && pre[b+1]-pre[a] === 2*e+1) ? 1 : 0; } }
+      for(let x=0;x<w;x++){
+        const pre = new Int32Array(h+1); for(let y=0;y<h;y++) pre[y+1] = pre[y] + tmpA[y*w+x];
+        for(let y=0;y<h;y++){ const a = y-e, b = y+e; tmpB[y*w+x] = (a>=0 && b<h && pre[b+1]-pre[a] === 2*e+1) ? 1 : 0; } }
+      let inkAll = 0, kept = 0; for(let i=0;i<mask.length;i++){ if(mask[i]) inkAll++; if(tmpB[i]) kept++; }
+      core = inkAll ? kept/inkAll : 0;
+    }
     let ink = 0, minX = w, maxX = -1, minY = h, maxY = -1;
     for(let y=0;y<h;y++) for(let x=0;x<w;x++) if(mask[y*w+x]){ ink++; if(x<minX) minX=x; if(x>maxX) maxX=x; if(y<minY) minY=y; if(y>maxY) maxY=y; }
     // count separate shapes (ignoring specks of a couple of pixels)
@@ -2275,7 +2431,10 @@
       }
       if(area >= 3) shapes++;
     }
-    return { mask, nodes:nodes.length, coverage: ink/(w*h), shapes,
+    let ci0=Infinity, ci1=-Infinity, cj0=Infinity, cj1=-Infinity;
+    for(const n of nodes){ if(n.i<ci0) ci0=n.i; if(n.i>ci1) ci1=n.i; if(n.j<cj0) cj0=n.j; if(n.j>cj1) cj1=n.j; }
+    const cellFill = nodes.length ? nodes.length / ((ci1-ci0+1)*(cj1-cj0+1)) : 0;
+    return { mask, core, nodes:nodes.length, cellFill, coverage: ink/(w*h), shapes,
              boxFill: ink ? ink / ((maxX-minX+1)*(maxY-minY+1)) : 0,
              spread: ink ? Math.max((maxX-minX+1)/w, (maxY-minY+1)/h) : 0 };
   }
@@ -2284,13 +2443,14 @@
   function remixPasses(look, m, isWord){
     const checks = {
       notEmpty:  m.coverage >= (isWord ? 0.04 : 0.12),   // letters are thin, so a word may ink less          // a few dots on a big empty canvas
-      notClogged: m.coverage <= (look.blend ? 0.30 : (isWord ? 0.40 : 0.30)),         // one heavy mass, holes filled in; a dense wall of dots or flowers is not a design
-      notBlock:  isWord || m.boxFill <= (look.blend ? 0.78 : 0.5),   // a plain filled rectangle is not a design
-      spreads:   m.spread >= (isWord ? 0.5 : 0.6),            // a small cluster lost in the corner
+      notClogged: m.coverage <= (look.blend ? (isWord ? 0.30 : 0.19) : (isWord ? 0.40 : 0.30)),         // one heavy mass, holes filled in; a dense wall of dots or flowers is not a design
+      solid:     isWord || !look.blend || m.core <= 0.05,   // a Blend shape with a filled core is a blob, not line work
+      notBlock:  isWord || (m.boxFill <= (look.blend ? 0.78 : 0.5) && m.cellFill <= 0.6),   // a plain filled rectangle is not a design
+      spreads:   m.spread >= (isWord ? 0.6 : 0.6),            // a small cluster lost in the corner
       // Blend that does not blend: marks must actually join into shapes
       joins:     !look.blend || (m.nodes >= 12 && m.nodes / Math.max(1, m.shapes) >= 2.5),
       // Separate needs enough marks to read as a composition
-      enough:    look.blend || m.nodes >= (isWord ? 25 : 120),
+      enough:    (look.blend && !isWord) || m.nodes >= (isWord ? 40 : 120),
       // a Blend remix should be a rich shape, not a few blobs
       rich:      isWord || !look.blend || m.nodes >= 140,
     };
@@ -2302,26 +2462,20 @@
   // clear. A plan is 1 or 2 stickers of one size in the corners of the canvas (about half of remixes),
   // never on a sticker the visitor placed.
   let remixPlan = [];
-  function remixPlanStickers(rnd){
-    if(rnd() >= REMIX_STICKER_CHANCE) return [];
-    const keys = Object.keys(STICKERS), n = [1,1,2,2,3][Math.floor(rnd()*5)];
+  function remixPlanStickers(rnd, isWord){
+    if(!isWord && rnd() >= REMIX_PATTERN_STICKER_CHANCE) return [];   // a word always gets its frame of stickers
+    // One sticker, one size, one turn, set in the corners as a frame: either a diagonal pair or all four.
+    const keys = Object.keys(STICKERS), key = keys[Math.floor(rnd()*keys.length)], layout = rnd() < (isWord ? 0.2 : 0.5) ? 'diagonal' : 'four';
     const tl = screenToWorld(0,0), br = screenToWorld(W,H), cw = br.x-tl.x, ch = br.y-tl.y;
-    const size = 60 + Math.round(rnd()*80), scale = size / STICKER_REFERENCE_DIM;
-    const radiusOf = key => 0.5 * Math.hypot(STICKERS[key].w, STICKERS[key].h) * scale;   // circle around the sticker, any rotation
+    const size = isWord ? 45 + Math.round(rnd()*30) : 70 + Math.round(rnd()*70), scale = size / STICKER_REFERENCE_DIM, base = 90*Math.floor(rnd()*4);
+    const R = 0.5 * Math.hypot(STICKERS[key].w, STICKERS[key].h) * scale, inset = 14 + R + rnd()*0.03*Math.min(cw,ch);
+    // each corner turns the sticker a further quarter, going round clockwise from the top left, so the
+    // set is balanced: top left 0, top right 90, bottom right 180, bottom left 270 (plus one shared base turn)
+    const corners = [[tl.x+inset, tl.y+inset, 0], [br.x-inset, br.y-inset, 180], [br.x-inset, tl.y+inset, 90], [tl.x+inset, br.y-inset, 270]].slice(0, layout === 'diagonal' ? 2 : 4);
+    if(layout === 'diagonal' && rnd() < 0.5){ corners[0] = [tl.x+inset, br.y-inset, 270]; corners[1] = [br.x-inset, tl.y+inset, 90]; }   // the other diagonal
     const placed = stickerList.filter(st => !st.rx).map(st => ({ x:st.wx, y:st.wy, r:0.5*Math.hypot(STICKERS[st.key].w, STICKERS[st.key].h)*st.scale }));
-    const plan = [];
-    for(let k=0;k<n;k++){
-      const key = keys[Math.floor(rnd()*keys.length)], R = radiusOf(key);
-      for(let attempt=0; attempt<80; attempt++){
-        const left = rnd() < 0.5, top = rnd() < 0.5, bandX = Math.max(1, 0.2*cw - R), bandY = Math.max(1, 0.2*ch - R);
-        const x = left ? tl.x + R + 8 + rnd()*bandX : br.x - R - 8 - rnd()*bandX, y = top ? tl.y + R + 8 + rnd()*bandY : br.y - R - 8 - rnd()*bandY;
-        if(placed.some(c => Math.hypot(c.x-x, c.y-y) < c.r + R + 12)) continue;
-        placed.push({x, y, r:R});
-        plan.push({ key, wx:x, wy:y, scale, rotation:90*Math.floor(rnd()*4), rx:true });
-        break;
-      }
-    }
-    return plan;
+    return corners.filter(([x,y]) => !placed.some(c => Math.hypot(c.x-x, c.y-y) < c.r + R + 12))
+                  .map(([x,y,turn]) => ({ key, wx:x, wy:y, scale, rotation:(base + turn) % 360, rx:true }));
   }
   // True when a candidate's marks would sit under a sticker that stays on the canvas or is planned.
   function remixHitsStickers(look, nodes){
@@ -2333,10 +2487,11 @@
   // Stickers are part of the variation: about half of remixes lay 1 to 4 stickers over the drawing,
   // in a colour from the same class as the ink. Stickers the visitor placed stay where they are
   // and only change colour; the ones Remix added are replaced on every click.
-  const REMIX_STICKER_CHANCE = 0.6;
+  const REMIX_STICKER_CHANCE = 0.45;
+  const REMIX_PATTERN_STICKER_CHANCE = 0.85;   // planned for 85% of patterns; some are dropped when the drawing reaches a corner, so about 75% of all remixes end up with stickers
 
   // ---- Sticker-only Remix: no drawing, just stickers set as a composition ----
-  const REMIX_SCENE_CHANCE = 0.2;
+  const REMIX_SCENE_CHANCE = 0.15;
   let remixSceneMode = 'auto';                // 'auto' | 'off' | 'only' (the tests set this)
   let remixPrevScene = { k1:null, k2:null, sig:null }, remixSceneNow = { k1:null, k2:null };   // the last sticker-only Remix, so the next uses other stickers
   const remixSceneSig = items => items.map(it => it.key).sort().join(',');
@@ -2350,55 +2505,46 @@
     const others = stickerList.filter(st => !st.rx).map(st => ({ x:st.wx, y:st.wy, r:radius(st) }));
     const free = (x, y, r, list) => x-r >= tl.x+12 && x+r <= br.x-12 && y-r >= tl.y+12 && y+r <= br.y-12 &&
       !others.some(o => Math.hypot(o.x-x, o.y-y) < o.r + r + 8) && !list.some(o => Math.hypot(o.wx-x, o.wy-y) < radius(o) + r + 8);
-    const keyMode = ri(0,2), k1 = pick(keys.filter(k => k !== remixPrevScene.k1)), k2 = pick(keys.filter(k => k !== k1 && k !== remixPrevScene.k2));
+    // Fewer variations: one sticker or two alternating, always upright or a regular quarter turn.
+    const keyMode = ri(0,1), k1 = pick(keys.filter(k => k !== remixPrevScene.k1)), k2 = pick(keys.filter(k => k !== k1 && k !== remixPrevScene.k2));
     remixSceneNow = { k1, k2 };
-    const keyAt = n => keyMode === 0 ? k1 : keyMode === 1 ? (n % 2 ? k2 : k1) : pick(keys);   // one sticker, two alternating, or a mix
-    const rotMode = ri(0,2);
-    const rotAt = n => rotMode === 0 ? 0 : rotMode === 1 ? (n % 2 ? 90 : 0) : 90*ri(0,3);
+    const keyAt = n => keyMode === 0 ? k1 : (n % 2 ? k2 : k1);
+    const rotMode = ri(0,1);
+    const rotAt = n => rotMode === 0 ? 0 : (n % 2 ? 90 : 0);
     const out = [];
-    if(name === 'grid' || name === 'brick'){
-      const cols = ri(3,6), rows = ri(2,4), cell = Math.min((cw-30)/(cols + (name === 'brick' ? 0.5 : 0)), (ch-30)/rows);
-      const ks = Array.from({length:cols*rows}, (_, n) => keyAt(n)), top = Math.max(...ks.map(unit));
-      const scale = 0.44*cell/top, w0 = cell*(cols + (name === 'brick' ? 0.5 : 0)), h0 = cell*rows;
-      for(let r=0;r<rows;r++) for(let c=0;c<cols;c++){
-        const x = cx - w0/2 + cell*(c+0.5) + (name === 'brick' && r%2 ? cell/2 : 0), y = cy - h0/2 + cell*(r+0.5);
-        out.push(make(ks[r*cols+c], x, y, scale, rotAt(r*cols+c)));
+    if(name === 'frame'){                      // a rectangular border of stickers just inside the edge, the middle left empty
+      const nh = [4,6,8][ri(0,2)], nv = [2,4][ri(0,1)], key0 = keyAt(0);
+      const inset = 14, sh = (cw - 2*inset) / nh, sv = (ch - 2*inset) / (nv + 1);
+      const R = 0.42*Math.min(sh, sv), scale = R / unit(key0);
+      const left = tl.x + inset + R, right = br.x - inset - R, top = tl.y + inset + R, bottom = br.y - inset - R;
+      // each sticker is turned to match its side: the top row 0, the right side 90, the bottom 180, the
+      // left 270, and the four corners go round the same way (top left 0, top right 90, bottom right 180,
+      // bottom left 270), so identical stickers make a balanced pinwheel instead of four copies
+      let n = 0;
+      for(let q=0;q<nh;q++){
+        const x = left + (right-left)*q/(nh-1), first = q === 0, last = q === nh-1;
+        out.push(make(keyAt(n++), x, top, scale, last ? 90 : 0));
+        out.push(make(keyAt(n++), x, bottom, scale, first ? 270 : 180));
+      }
+      for(let q=1;q<=nv;q++){ const y = top + (bottom-top)*q/(nv+1); out.push(make(keyAt(n++), left, y, scale, 270)); out.push(make(keyAt(n++), right, y, scale, 90)); }
+    } else if(name === 'corners'){             // a short run of stickers along each side of every corner, shrinking away from it
+      const key0 = keyAt(0), R0 = Math.min(cw, ch) * (0.075 + rnd()*0.03), inset = 14, along = ri(2,3), down = ri(1,2), shrink = 0.78;
+      const sc = R0 / unit(key0);
+      let n = 0;
+      for(const bot of [false, true]) for(const right of [false, true]){
+        const dx = right ? -1 : 1, dy = bot ? -1 : 1, rot = !bot ? (right ? 90 : 0) : (right ? 180 : 270);     // top left 0, top right 90, bottom right 180, bottom left 270
+        const x0 = right ? br.x - inset - R0 : tl.x + inset + R0, y0 = bot ? br.y - inset - R0 : tl.y + inset + R0;
+        let x = x0;
+        for(let q=0;q<along;q++){ const f = Math.pow(shrink, q); out.push(make(keyAt(n++), x, y0, sc*f, rot)); x += dx*(R0*f*1.05 + R0*f*shrink*1.05); }
+        let y = y0;
+        for(let q=1;q<=down;q++){ const fprev = Math.pow(shrink, q-1), f = Math.pow(shrink, q); y += dy*(R0*fprev*1.05 + R0*f*1.05); out.push(make(keyAt(n++), x0, y, sc*f, rot)); }
       }
     } else if(name === 'ring'){
-      const n = ri(6,12), a = cw*0.36, b = ch*0.36, circ = 2*Math.PI*Math.sqrt((a*a+b*b)/2), ks = Array.from({length:n}, (_, q) => keyAt(q));
-      const scale = Math.min(0.44*circ/n, b*0.5)/Math.max(...ks.map(unit)), th0 = rnd()*6.28;
-      ks.forEach((key, q) => { const th = th0 + 2*Math.PI*q/n; out.push(make(key, cx + a*Math.cos(th), cy + b*Math.sin(th), scale, rotAt(q))); });
-      if(rnd() < 0.6){ const kc = pick(keys), sc = Math.min(a, b)*0.62/unit(kc); out.push(make(kc, cx, cy, Math.min(sc, scale*2.6))); }
-    } else if(name === 'line'){
-      const n = ri(5,7), diag = rnd() < 0.7, grow = rnd() < 0.5, x0 = tl.x + cw*0.1, x1 = br.x - cw*0.1, y0 = diag ? tl.y + ch*0.15 : cy, y1 = diag ? br.y - ch*0.15 : cy;
-      const base = Math.min(cw, ch)*0.1;
-      for(let q=0;q<n;q++){
-        const t = q/(n-1), key = keyAt(q), f = 0.35 + 0.55*(grow ? t : 1-t), sc = base*f/unit(key);
-        out.push(make(key, x0 + (x1-x0)*t, y0 + (y1-y0)*t, sc, rotAt(q)));
-      }
-    } else if(name === 'hero' || name === 'packed' || name === 'mirrored'){
-      const big = name === 'hero' ? [0.34] : name === 'packed' ? [0.2, 0.2, 0.13, 0.13, 0.13, 0.09, 0.09, 0.09, 0.09, 0.06, 0.06, 0.06, 0.06, 0.06] : [0.18, 0.12, 0.12, 0.08, 0.08, 0.08, 0.06, 0.06];
-      const min = Math.min(cw, ch), smalls = name === 'hero' ? ri(8,14) : 0;
-      const sizes = big.map(f => f*min).concat(Array.from({length:smalls}, () => min*(0.05 + rnd()*0.05)));
-      for(const rad of sizes){
-        const key = pick(keys), sc = rad/unit(key);
-        for(let attempt=0; attempt<400; attempt++){
-          const x = name === 'hero' && out.length === 0 ? cx : tl.x + rad + 12 + rnd()*Math.max(1, cw - 2*rad - 24), y = name === 'hero' && out.length === 0 ? cy : tl.y + rad + 12 + rnd()*Math.max(1, ch - 2*rad - 24);
-          if(name === 'mirrored'){
-            const mx = 2*cx - x, left = x < cx - rad - 6;
-            if(!left || !free(x, y, rad, out) || !free(mx, y, rad, out.concat([make(key, x, y, sc, 0)]))) continue;
-            const rot = 90*ri(0,3); out.push(make(key, x, y, sc, rot)); out.push(make(key, mx, y, sc, (360-rot)%360)); break;
-          }
-          if(!free(x, y, rad, out)) continue;
-          out.push(make(key, x, y, sc)); break;
-        }
-      }
-    } else if(name === 'spiral'){
-      const n = ri(9,15), grow = rnd() < 0.5, turns = 1.2 + rnd()*0.6, maxR = Math.min(cw, ch)*0.42, min = Math.min(cw, ch);
-      for(let q=0;q<n;q++){
-        const t = (q+0.5)/n, th = 2*Math.PI*turns*t, r = maxR*Math.sqrt(t)*0.95 + 6, key = keyAt(q), f = 0.035 + 0.05*(grow ? t : 1-t);
-        out.push(make(key, cx + r*Math.cos(th)*1.25, cy + r*Math.sin(th), min*f/unit(key), rotAt(q)));
-      }
+      const n = [6,8,10,12][ri(0,3)], a = cw*0.36, b = ch*0.36, circ = 2*Math.PI*Math.sqrt((a*a+b*b)/2), ks = Array.from({length:n}, (_, q) => keyAt(q));
+      const scale = Math.min(0.44*circ/n, b*0.5)/Math.max(...ks.map(unit)), th0 = Math.PI/n;      // an even count, turned so no sticker sits on the centre line
+      ks.forEach((key, q) => { const th = th0 + 2*Math.PI*q/n, ax = Math.cos(th), ay = Math.sin(th);
+        const rot = Math.abs(ay) >= Math.abs(ax) ? (ay < 0 ? 0 : 180) : (ax > 0 ? 90 : 270);          // top 0, right 90, bottom 180, left 270
+        out.push(make(key, cx + a*ax, cy + b*ay, scale, rot)); });
     }
     return out;
   }
@@ -2437,7 +2583,7 @@
     const filled = area/(cw*ch);
     return filled >= 0.09 && filled <= 0.7 && (maxX-minX >= 0.5*cw || maxY-minY >= 0.5*ch);
   }
-  const REMIX_SCENES = ['grid','brick','ring','line','hero','packed','mirrored','spiral'];
+  const REMIX_SCENES = ['frame','corners','ring'];
   function remixStickerScene(rnd){
     let look = null;
     for(let t=0;t<30 && !look;t++){ const l = remixPickLook(rnd, false); if(l.bg.join() !== remixLastBg) look = l; }
@@ -2446,7 +2592,7 @@
     let items = null, name = null, tries = 0;
     for(; tries<40 && !items; tries++){
       name = names[Math.floor(rnd()*names.length)];
-      const cand = remixSceneSymmetric(remixSceneItems(name, rnd));
+      const cand = remixSceneItems(name, rnd);
       if(remixSceneOk(cand) && remixSceneSig(cand) !== remixPrevScene.sig) items = cand;     // never the same stickers as last time
     }
     if(!items) return false;
@@ -2529,17 +2675,35 @@
 
   async function remix(rnd){
     rnd = rnd || Math.random;
-    if(remixSceneMode === 'only' || (remixSceneMode === 'auto' && rnd() < REMIX_SCENE_CHANCE)){ if(remixStickerScene(rnd)) return; }
-    remixPlan = remixPlanStickers(rnd);
-    let word = rnd() < REMIX_WORD_CHANCE ? await remixPickWord(rnd) : null;
+    remixForceCat = remixPickCat(rnd, remixPrevCat);
+    remixFamily = null;
+    try { await remixInner(rnd); }
+    finally { remixForceCat = null; remixFamily = null; }
+    if(lastRemix) remixPrevCat = remixCatOf(lastRemix.kind);
+  }
+  async function remixInner(rnd){
+    const cat = remixForceCat;
+    if(remixSceneMode === 'only' || (remixSceneMode === 'auto' && cat === 'stickers')){ if(remixStickerScene(rnd)) return; }
+    // a pattern family other than the last kind (a scene that could not be built falls back to one)
+    const famNames = Object.keys(REMIX_FAMILIES);
+    const patternFamily = () => {
+      if(cat in REMIX_FAMILIES && cat !== remixPrevCat) return REMIX_FAMILIES[cat];
+      const opts = famNames.filter(f => f !== remixPrevCat);
+      return REMIX_FAMILIES[opts[Math.floor(rnd()*opts.length)]];
+    };
+    const wantWord = cat === 'word';
+    remixPlan = remixPlanStickers(rnd, wantWord);
+    let word = wantWord ? await remixPickWord(rnd) : null;
     for(let r=0; word && r<6 && remixKindOf(null, word) === remixPrev.kind; r++) word = await remixPickWord(rnd);   // not the same word in the same font twice
     if(word && remixKindOf(null, word) === remixPrev.kind) word = null;
+    remixFamily = word ? null : patternFamily();
     let chosen = null, best = null;
     for(let tries=1; tries<=REMIX_TRIES && !chosen; tries++){
       const look = remixPickLook(rnd, !!word);
       if(look.bg.join() === remixLastBg) continue;   // a new background every time
       const nodes = word ? remixWordNodes(look, word) : remixStrokes(look, rnd);
       if(!nodes || nodes.length < 6) continue;
+      if(!word) remixAdapt(look, nodes, rnd);
       if(tries <= 100 && remixHitsStickers(look, nodes)) continue;   // marks keep clear of stickers that stay
       const m = remixMeasure(look, nodes), verdict = remixPasses(look, m, !!word);
       if(tries <= 135 && remixSimilar(look, nodes, m, word)) continue;
@@ -2564,13 +2728,14 @@
       }
     }
     if(word && (!chosen || chosen.failed.length)){   // a word that could not be made to read well is not used
-      word = null;
+      word = null; remixFamily = patternFamily();
       chosen = null; best = null;
       for(let tries=1; tries<=REMIX_TRIES && !chosen; tries++){
         const look = remixPickLook(rnd, false);
         if(look.bg.join() === remixLastBg) continue;
         const nodes = remixStrokes(look, rnd);
         if(!nodes || nodes.length < 6) continue;
+        remixAdapt(look, nodes, rnd);
         if(tries <= 100 && remixHitsStickers(look, nodes)) continue;
         const m = remixMeasure(look, nodes), verdict = remixPasses(look, m, false);
         if(tries <= 135 && remixSimilar(look, nodes, m, null)) continue;
