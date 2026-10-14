@@ -2875,8 +2875,13 @@
     rnd = rnd || Math.random;
     remixForceCat = remixPickCat(rnd, remixPrevCat);
     remixFamily = null;
+    // Remix starts a new picture: every sticker, the visitor's own included, is cleared. Undo still brings them back.
+    const preSnap = snapshotContent(), preStickers = stickerList, preLen = undoStack.length;
+    stickerList = [];
     try { await remixInner(rnd); }
     finally { remixForceCat = null; remixFamily = null; }
+    if(undoStack.length === preLen + 1) undoStack[undoStack.length-1] = preSnap;       // undo goes back to before the Remix
+    else if(undoStack.length === preLen) stickerList = preStickers;                      // nothing was remixed
     if(lastRemix) remixPrevCat = remixCatOf(lastRemix.kind);
   }
   async function remixInner(rnd){
