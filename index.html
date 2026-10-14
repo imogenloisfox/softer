@@ -2877,6 +2877,7 @@
     remixFamily = null;
     // Remix starts a new picture: every sticker, the visitor's own included, is cleared. Undo still brings them back.
     const preSnap = snapshotContent(), preStickers = stickerList, preLen = undoStack.length;
+    if(pendingStickerKey){ pendingStickerKey = null; Object.values(stickerThumbEls).forEach(el => el.classList.remove('active')); }   // a sticker armed before the Remix is put down, so the next click edits the design instead of stamping
     stickerList = [];
     try { await remixInner(rnd); }
     finally { remixForceCat = null; remixFamily = null; }
