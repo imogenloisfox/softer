@@ -1888,12 +1888,14 @@
   // spirals, two flower heads...). Each Remix first picks a kind other than the last one, then builds it.
   const REMIX_FAMILIES = {
     spiral:  ['spiral','spiral','galaxy'],
-    flower:  ['daisy','daisy','sakura','sakura','sakura','lily','lotus','lotus','cosmos','cosmos','hibiscus','scallop','scallop','pentafoil','datura','datura','datura','stickerHead','stickerHead'],
-    cymatic: ['cymatic'],
+    flower:  ['daisy','daisy','dumbbells','sakura','sakura','sakura','lotus','lotus','cosmos','cosmos','scallop','scallop','pentafoil','datura','datura','datura','quatrefoil','quatrefoil'],
     combo:   ['combo'],
+    cymatic: ['cymatic'],
+    mirror:  ['mirrored','kaleido'],
+    blob:    ['blobflower'],
     radial:  ['rings','waves'],
   };
-  const REMIX_CATS = [['word',0.22],['stickers',0.11],['spiral',0.06],['flower',0.36],['combo',0.10],['cymatic',0.07],['radial',0.08]];
+  const REMIX_CATS = [['word',0.22],['stickers',0.15],['spiral',0.06],['flower',0.25],['combo',0.08],['mirror',0.10],['blob',0.12],['cymatic',0.04],['radial',0.06]];
   const remixCatOf = kind => {
     kind = String(kind || '');
     if(kind.startsWith('word')) return 'word';
@@ -1970,11 +1972,12 @@
       if(fits.length){ inkCols = ink; bgCols = pick(fits); }
     }
     if(!inkCols){ inkCols = [pick(REMIX_LIGHT)]; bgCols = [pick(REMIX_DARK)]; }   // cannot happen in practice
-    const flower = !wordy && remixForceCat === 'flower' && rnd() < 0.3;   // flowers are too fine to spell with                // Flower cannot Blend
+    const flower = !wordy && ((remixForceCat === 'flower' && rnd() < 0.3) || (remixForceCat === 'mirror' && rnd() < 0.3));   // flowers are too fine to spell with                // Flower cannot Blend
     // A word is set in one of three styles: joined (Blend), separate and blobby (big dots that overlap
     // into a chunky outline), or plain separate dots.
     const wordStyle = wordy ? (rnd() < 0.4 ? 'blend' : rnd() < 0.65 ? 'blobby' : 'plain') : null;
-    const blend = !flower && (wordy ? wordStyle === 'blend' : (rnd() < 0.3 && remixFamily === REMIX_FAMILIES.spiral));   // only spirals are joined into shapes: every other pattern stays as separate dots
+    const isBlob = !wordy && remixForceCat === 'blob';
+    const blend = isBlob || !flower && (wordy ? wordStyle === 'blend' : (rnd() < 0.3 && remixFamily === REMIX_FAMILIES.spiral) || (rnd() < 0.45 && remixFamily === REMIX_FAMILIES.mirror));   // only spirals are joined into shapes: every other pattern stays as separate dots
     // a word needs a finer grid so its letters can be read
     const sp0 = wordy ? SPACING_MIN + Math.round(Math.pow(rnd(), 2) * 0.4 * (SPACING_MAX - SPACING_MIN))
                      : SPACING_MIN + Math.round(Math.pow(rnd(), 1.5) * (SPACING_MAX - SPACING_MIN));
@@ -1986,7 +1989,11 @@
     const sizeAt = f => Math.round(5 + f*(75 - 5));
     const BLEND_SIZE_MIN = sizeAt(0.01), BLEND_SIZE_MAX = sizeAt(0.20), WORD_SIZE_MAX = sizeAt(0.40);
     const spLimit = blend && !wordy ? Math.min(REMIX_BLEND_SP_MAX, Math.floor(BLEND_SIZE_MAX / 0.72)) : 99;
-    const sp = Math.min(sp0, REMIX_SP_CAP, spLimit);
+    // a blob flower: a small symmetrical motif of 5, 7 or 9 cells across, so every cell is a big blob that
+    // melts into its neighbours; the grid is set so the motif fills most of the canvas height
+    const blobN = isBlob ? [5,7,7,9][Math.floor(rnd()*4)] : 0;
+    const worldH = isBlob ? screenToWorld(0,H).y - screenToWorld(0,0).y : 0;
+    const sp = isBlob ? Math.max(26, Math.min(SPACING_MAX, Math.round(0.8*worldH/blobN))) : Math.min(sp0, REMIX_SP_CAP, spLimit);
     const ratio = blend ? 0.7 + rnd()*0.35 : (wordy ? (wordStyle === 'blobby' ? 0.85 + rnd()*0.4 : 0.42 + rnd()*0.1) : 0.36 + rnd()*0.14);
     const sizeFor = (spacing, r, isBlend) => isBlend && !wordy ? Math.max(BLEND_SIZE_MIN, Math.min(BLEND_SIZE_MAX, Math.round(spacing*r)))
                                           : wordy ? Math.max(5, Math.min(WORD_SIZE_MAX, Math.round(spacing*r)))
@@ -1994,8 +2001,8 @@
     return {
       bg:  bgCols,
       ink: inkCols,
-      flower, blend, sp,
-      size: sizeFor(sp, ratio, blend), sizeFor,
+      flower, blend, sp, blobN,
+      size: isBlob ? Math.min(75, Math.round(sp*(0.95 + rnd()*0.1))) : sizeFor(sp, ratio, blend), sizeFor,
     };
   }
 
@@ -2224,6 +2231,73 @@
       petalRow(a, strokes, on);
       return strokes;
     };
+    // Simple, symmetrical flower marks: four circles, concave stars, lens petals, spoked dumbbells and a pixel bloom
+    const blobflower = () => {                 // a small left/right/up/down symmetrical motif on a coarse grid: big joined blobs
+      // Petals round an open middle, not a solid block: the centre dot sits alone or inside a ring of
+      // four or eight cells, no 2x2 blocks, no long bars, and under 40% of the cells filled.
+      const N = look.blobN || 7, c = (N-1)/2;
+      const build = () => {
+        const on = new Set(), add = (a,b) => { for(const [x,y] of [[a,b],[b,a]]) for(const sx of [-1,1]) for(const sy of [-1,1]) on.add((x*sx)+','+(y*sy)); };
+        add(0,0);
+        const r1 = rnd(); if(r1 < 0.2) add(1,0); else if(r1 < 0.5) add(1,1);          // else the centre stays alone
+        const outer = 0.3 + rnd()*0.25;
+        for(let a=2; a<=c; a++) for(let b=0; b<=a; b++){ const edge = Math.hypot(a,b) >= c-0.2; if(rnd() < (edge ? Math.max(outer, 0.5) : outer)) add(a,b); }
+        return on;
+      };
+      const ok = on => {
+        const has = (x,y) => on.has(x+','+y); let blocks = 0, run = 0;
+        for(let y=-c; y<c; y++) for(let x=-c; x<c; x++) if(has(x,y) && has(x+1,y) && has(x,y+1) && has(x+1,y+1)) blocks++;
+        for(let y=-c; y<=c; y++){ let rr = 0, rc = 0; for(let x=-c; x<=c; x++){ rr = has(x,y) ? rr+1 : 0; rc = has(y,x) ? rc+1 : 0; run = Math.max(run, rr, rc); } }
+        let dr = 0;
+        for(let y=-c; y<=c; y++) for(let x=-c; x<=c; x++) if(has(x,y)){ let l1 = 1, l2 = 1; while(has(x+l1,y+l1)) l1++; while(has(x+l2,y-l2)) l2++; dr = Math.max(dr, l1, l2); }
+        return blocks === 0 && dr <= 3 && run <= 3 && on.size >= 8 && on.size <= 0.4*N*N;
+      };
+      let on = null;
+      for(let t=0; t<80 && !on; t++){ const cand = build(); if(ok(cand)) on = cand; }
+      if(!on){ on = new Set(); for(const [x,y] of [[0,0],[2,0],[-2,0],[0,2],[0,-2],[1,1],[-1,1],[1,-1],[-1,-1]]) on.add(x+','+y); }
+      const strokes = [];
+      for(let y=-c; y<=c; y++){ const r = []; for(let x=-c; x<=c; x++) if(on.has(x+','+y)) r.push([centre.i+x, centre.j+y]); if(r.length) strokes.push(r); }
+      return strokes;
+    };
+    const quatrefoil = () => {                 // four round lobes: touching, overlapping with a small square gap, or fully merged
+      const a = subArea(0.8), {cx, cy, maxR} = centreOf(a), k = 1 + rnd()*0.1, d = maxR/(1+k), r = d*k, strokes = [];
+      const list = [[cx-d, cy-d, r],[cx+d, cy-d, r],[cx-d, cy+d, r],[cx+d, cy+d, r]];
+      if(rnd() < 0.4) list.push([cx, cy, d*0.45]);   // a waist joining the lobes
+      petalRow(a, strokes, discs(list));
+      return strokes;
+    };
+    const pointstar = () => {                  // a four-pointed star with curved-in sides, or a pillow: the sides curve less
+      const a = subArea(0.85), {cx, cy, maxR} = centreOf(a), p = 0.62 + rnd()*0.16, rot = rnd() < 0.5 ? 0 : Math.PI/4, strokes = [], ca = Math.cos(rot), sa = Math.sin(rot);
+      petalRow(a, strokes, (i,j) => { const x = ((i-cx)*ca + (j-cy)*sa)/maxR, y = (-(i-cx)*sa + (j-cy)*ca)/maxR; return Math.abs(x)**p + Math.abs(y)**p <= 1; });
+      return strokes;
+    };
+    const lensflower = () => {                 // four, six or eight leaf-shaped petals meeting at the middle
+      const a = subArea(0.85), {cx, cy, maxR} = centreOf(a), n = [4,6,8][ri(0,2)], strokes = [], L = maxR, w = L*(n === 4 ? 0.34 : n === 6 ? 0.26 : 0.2), off = rnd()*Math.PI*2;
+      petalRow(a, strokes, (i,j) => {
+        for(let p=0;p<n;p++){ const ang = off + 2*Math.PI*p/n, ca = Math.cos(ang), sa = Math.sin(ang), dx = i-cx, dy = j-cy, u = (dx*ca + dy*sa)/L, v = Math.abs(-dx*sa + dy*ca);
+          if(u > 0 && u < 1 && v <= w*4*u*(1-u)) return true; }
+        return false; });
+      return strokes;
+    };
+    const dumbbells = () => {                  // thin spokes that end in round buds, like a wheel of petals
+      const a = subArea(0.85), {cx, cy, maxR} = centreOf(a), n = [8,10,12][ri(0,2)], strokes = [], list = [], bud = Math.max(1.4, maxR*0.12), inner = maxR*0.2, off = rnd()*Math.PI*2;
+      for(let p=0;p<n;p++){ const ang = off + 2*Math.PI*p/n;
+        for(let t=inner; t<=maxR-bud; t+=0.5) list.push([cx + t*Math.cos(ang), cy + t*Math.sin(ang), 0.75]);
+        list.push([cx + (maxR-bud)*Math.cos(ang), cy + (maxR-bud)*Math.sin(ang), bud]); }
+      list.push([cx, cy, maxR*0.09]);
+      petalRow(a, strokes, discs(list));
+      return strokes;
+    };
+    const pixelbloom = () => {                 // a small four-fold symmetrical motif, each cell enlarged to a block of dots
+      const a = subArea(0.85), {cx, cy, maxR} = centreOf(a), strokes = [], bs = maxR > 22 ? 3 : 2, q = Math.max(3, Math.min(5, Math.floor(maxR/bs)));
+      const quarter = []; for(let y=0;y<q;y++){ quarter.push([]); for(let x=0;x<q;x++) quarter[y].push(x === 0 || y === 0 ? (rnd() < 0.8) : (rnd() < 0.45)); }
+      quarter[0][0] = true;
+      const cells = new Set();
+      for(let y=0;y<q;y++) for(let x=0;x<q;x++) if(quarter[y][x]) for(const sx of [-1,1]) for(const sy of [-1,1]) for(let bx=0;bx<bs;bx++) for(let by=0;by<bs;by++){
+        const gx = sx*(x*bs + bx + (sx > 0 ? 0 : 1)), gy = sy*(y*bs + by + (sy > 0 ? 0 : 1)); cells.add(Math.round(cx)+gx+'_'+(Math.round(cy)+gy)); }
+      petalRow(a, strokes, (i,j) => cells.has(i+'_'+j));
+      return strokes;
+    };
     let stickerHeadCanvas = null;
     const STICKER_HEADS = ['sticker_1','sticker_2'];   // the four-lobed stickers: the others are too abstract to read as a flower head
     const stickerHead = () => {                // a sticker silhouette set onto the grid: solid, outlined, or in rings
@@ -2359,7 +2433,7 @@
       const sw = Math.round(ww*0.62), sh = Math.round(wh*0.78), size = Math.max(8, Math.round(Math.min(ww, wh)*(0.40 + rnd()*0.08)));
       const si0 = win.i0 + (left ? Math.round(ww*0.1) : ww - sw - Math.round(ww*0.1)), sj0 = win.j0 + Math.round((wh-sh)/2);
       const fi0 = left ? win.i1 - size - Math.round(ww*0.1) : win.i0 + Math.round(ww*0.1), fj0 = top ? win.j0 + Math.round(wh*0.12) : win.j1 - size - Math.round(wh*0.12);
-      const coil = [spiral, spiral, galaxy][ri(0,2)], blooms = [daisy, sakura, lotus, cosmos, hibiscus, scallop, pentafoil, datura, stickerHead], bloom = blooms[ri(0, blooms.length-1)];
+      const coil = [spiral, spiral, galaxy][ri(0,2)], blooms = [sakura, lotus, cosmos, scallop, pentafoil, datura, quatrefoil], bloom = blooms[ri(0, blooms.length-1)];
       let out = [];
       try {
         areaOverride = {i0:si0, j0:sj0, i1:si0+sw-1, j1:sj0+sh-1}; out = coil();
@@ -2367,10 +2441,10 @@
       } finally { areaOverride = null; }
       return out;
     };
-    const K = { field, mirrored, kaleido, patch, wander, scatter, lines, rings, waves, spiral, rays, rose, daisy, sunflower, garden, galaxy, cymatic, sakura, lily, lotus, cosmos, hibiscus, scallop, pentafoil, datura, stickerHead, combo };
-    const flowery = ['daisy','daisy','sakura','sakura','sakura','lily','lotus','cosmos','hibiscus','scallop','datura'];   // flower heads and spirals come up most
-    const pool = look.blend ? ['rings','waves','cymatic','cymatic','cymatic'].concat(flowery)
-                            : ['rings','waves','cymatic','cymatic','cymatic'].concat(flowery);
+    const K = { blobflower, field, mirrored, kaleido, patch, wander, scatter, lines, rings, waves, spiral, rays, rose, daisy, sunflower, garden, galaxy, cymatic, sakura, lily, lotus, cosmos, hibiscus, scallop, pentafoil, datura, stickerHead, quatrefoil, pointstar, lensflower, dumbbells, pixelbloom, combo };
+    const flowery = ['sakura','sakura','sakura','lotus','cosmos','scallop','datura'];   // flower heads and spirals come up most
+    const pool = look.blend ? ['rings','rings'].concat(flowery)
+                            : ['rings','rings'].concat(flowery);
     let kind = remixFamily ? remixFamily[ri(0, remixFamily.length-1)] : pool[ri(0, pool.length-1)];
     let strokes = K[kind]();
     if(kind !== 'scatter' && kind !== 'combo' && !look.blend && rnd() < 0.12){
@@ -2546,18 +2620,18 @@
   function remixPasses(look, m, isWord){
     const checks = {
       notEmpty:  m.coverage >= (isWord ? 0.04 : 0.12),   // letters are thin, so a word may ink less          // a few dots on a big empty canvas
-      notClogged: m.coverage <= (look.blend ? (isWord ? 0.30 : 0.19) : (isWord ? 0.40 : 0.30)),         // one heavy mass, holes filled in; a dense wall of dots or flowers is not a design
-      masses:    isWord || String(m.kind).split('+')[0] === 'combo' ? (isWord || m.interior <= 0.3) : (remixForceCat === 'flower' || m.interior <= 0.4),   // coils, plates and rings are line work: no solid blobs
+      notClogged: m.coverage <= (look.blend ? (isWord ? 0.30 : remixForceCat === 'mirror' || remixForceCat === 'blob' ? 0.5 : 0.19) : (isWord ? 0.40 : 0.30)),         // one heavy mass, holes filled in; a dense wall of dots or flowers is not a design
+      masses:    isWord || String(m.kind).split('+')[0] === 'combo' ? (isWord || m.interior <= 0.3) : (remixForceCat === 'flower' || remixForceCat === 'mirror' || remixForceCat === 'blob' || m.interior <= 0.4),   // coils, plates and rings are line work: no solid blobs
       comboRich: isWord || String(m.kind).split('+')[0] !== 'combo' || m.nodes >= 240,   // a coil and a bloom need a fine grid to read
-      solid:     isWord || !look.blend || m.core <= 0.05,   // a Blend shape with a filled core is a blob, not line work
+      solid:     isWord || !look.blend || remixForceCat === 'mirror' || remixForceCat === 'blob' || m.core <= 0.05,   // a Blend shape with a filled core is a blob, not line work
       notBlock:  isWord || (m.boxFill <= (look.blend ? 0.78 : 0.5) && m.cellFill <= 0.6),   // a plain filled rectangle is not a design
       spreads:   m.spread >= (isWord ? 0.6 : 0.6),            // a small cluster lost in the corner
       // Blend that does not blend: marks must actually join into shapes
-      joins:     !look.blend || (m.nodes >= 12 && m.nodes / Math.max(1, m.shapes) >= 2.5),
+      joins:     !look.blend || remixForceCat === 'blob' || (m.nodes >= 12 && m.nodes / Math.max(1, m.shapes) >= 2.5),
       // Separate needs enough marks to read as a composition
       enough:    (look.blend && !isWord) || m.nodes >= (isWord ? 40 : 120),
       // a Blend remix should be a rich shape, not a few blobs
-      rich:      isWord || !look.blend || m.nodes >= 140,
+      rich:      isWord || !look.blend || remixForceCat === 'blob' || m.nodes >= 140,
     };
     const failed = Object.keys(checks).filter(k => !checks[k]);
     return { ok: failed.length === 0, failed };
@@ -2568,7 +2642,7 @@
   // never on a sticker the visitor placed.
   let remixPlan = [];
   function remixPlanStickers(rnd, isWord){
-    const framed = remixForceCat === 'flower' || remixForceCat === 'combo';   // every flower is framed by stickers
+    const framed = ['flower','combo','blob'].includes(remixForceCat);   // every flower is framed by stickers
     if(!isWord && !framed && rnd() >= REMIX_PATTERN_STICKER_CHANCE) return [];   // a word always gets its frame of stickers
     // One sticker, one size, one turn, set in the corners as a frame: either a diagonal pair or all four.
     const keys = Object.keys(STICKERS), key = keys[Math.floor(rnd()*keys.length)], layout = rnd() < (isWord ? 0.2 : remixForceCat === 'combo' ? 0.75 : 0.5) ? 'diagonal' : 'four';
@@ -2586,9 +2660,9 @@
   // True when a candidate's marks would sit under a sticker that stays on the canvas or is planned.
   function remixHitsStickers(look, nodes){
     return stickerList.filter(st => !st.rx).concat(remixPlan).some(st => {
-      const shrink = (remixPlan.includes(st) && (remixForceCat === 'flower' || remixForceCat === 'combo')) ? 0.45 : 1;   // a framing sticker can shrink to fit
+      const shrink = (remixPlan.includes(st) && ['flower','combo','blob'].includes(remixForceCat)) ? 0.3 : 1;   // a framing sticker can shrink to fit
       const R = 0.5 * Math.hypot(STICKERS[st.key].w, STICKERS[st.key].h) * st.scale * shrink;
-      return nodes.some(n => Math.hypot(n.i*look.sp - st.wx, n.j*look.sp - st.wy) < look.size + 0.7*R);
+      return nodes.some(n => Math.hypot(n.i*look.sp - st.wx, n.j*look.sp - st.wy) < look.size + 0.5*look.sp + R);
     });
   }
   // Stickers are part of the variation: about half of remixes lay 1 to 4 stickers over the drawing,
@@ -2646,6 +2720,16 @@
         let y = y0;
         for(let q=1;q<=down;q++){ const fprev = Math.pow(shrink, q-1), f = Math.pow(shrink, q); y += dy*(R0*fprev*1.05 + R0*f*1.05); out.push(make(keyAt(n++), x0, y, sc*f, rot)); }
       }
+    } else if(name === 'mirror'){              // mixed stickers of different sizes round the edges, mirrored left/right, the middle left empty
+      const half = Math.min(cw, ch), want = ri(3,6), kinds = [pick(keys), pick(keys), pick(keys)];
+      for(let a=0; a<400 && out.length<want; a++){
+        const key = pick(kinds), R = half*(0.05 + rnd()*0.10), scale = R / unit(key);
+        const x = tl.x + 14 + R + rnd()*Math.max(1, cx - tl.x - 28 - 2*R - 12), y = tl.y + 14 + R + rnd()*Math.max(1, ch - 28 - 2*R);
+        const nx = (x-cx)/(cw/2), ny = (y-cy)/(ch/2);
+        if(nx*nx + ny*ny < 0.5) continue;                                         // keep clear of the middle so it reads as a frame
+        const rot = Math.abs(ny) >= Math.abs(nx) ? (ny < 0 ? 0 : 180) : 270;     // turned to match the side it sits on
+        if(free(x, y, R, out)) out.push(make(key, x, y, scale, rot));
+      }
     } else if(name === 'ring'){
       const n = [6,8,10,12][ri(0,3)], a = cw*0.36, b = ch*0.36, circ = 2*Math.PI*Math.sqrt((a*a+b*b)/2), ks = Array.from({length:n}, (_, q) => keyAt(q));
       const scale = Math.min(0.44*circ/n, b*0.5)/Math.max(...ks.map(unit)), th0 = Math.PI/n;      // an even count, turned so no sticker sits on the centre line
@@ -2690,7 +2774,7 @@
     const filled = area/(cw*ch);
     return filled >= 0.09 && filled <= 0.7 && (maxX-minX >= 0.5*cw || maxY-minY >= 0.5*ch);
   }
-  const REMIX_SCENES = ['frame','corners','ring'];
+  const REMIX_SCENES = ['frame','corners','ring','mirror','mirror','mirror'];
   function remixStickerScene(rnd){
     let look = null;
     for(let t=0;t<30 && !look;t++){ const l = remixPickLook(rnd, false); if(l.bg.join() !== remixLastBg) look = l; }
@@ -2699,7 +2783,8 @@
     let items = null, name = null, tries = 0;
     for(; tries<40 && !items; tries++){
       name = names[Math.floor(rnd()*names.length)];
-      const cand = remixSceneItems(name, rnd);
+      let cand = remixSceneItems(name, rnd);
+      if(name === 'mirror') cand = remixSceneSymmetric(cand);
       if(remixSceneOk(cand) && remixSceneSig(cand) !== remixPrevScene.sig) items = cand;     // never the same stickers as last time
     }
     if(!items) return false;
@@ -2751,13 +2836,13 @@
     remixStickerColour(look, rnd);
     // a planned sticker is dropped only if the drawing that was chosen still reaches it
     let made = 0;
-    const framedFlower = ['flower','combo'].includes(remixCatOf(nodes.kind));
+    const framedFlower = ['flower','combo','blob'].includes(remixCatOf(nodes.kind));
     for(const pl0 of plan){
       // a flower is always framed: if the bloom reaches a corner sticker, the sticker shrinks until it fits
       let placed = null;
-      for(const f of (framedFlower ? [1, 0.8, 0.62, 0.48, 0.36, 0.28] : [1])){
+      for(const f of (framedFlower ? [1, 0.8, 0.62, 0.48, 0.36, 0.28, 0.2] : [1])){
         const pl = Object.assign({}, pl0, { scale: pl0.scale*f }), R = 0.5 * Math.hypot(STICKERS[pl.key].w, STICKERS[pl.key].h) * pl.scale;
-        if(!nodes.some(nd => Math.hypot(nd.i*look.sp - pl.wx, nd.j*look.sp - pl.wy) < nd.r + 0.5*nd.sp + (framedFlower ? 0.7 : 0.85)*R)){ placed = pl; break; }
+        if(!nodes.some(nd => Math.hypot(nd.i*look.sp - pl.wx, nd.j*look.sp - pl.wy) < nd.r + 0.5*nd.sp + R)){ placed = pl; break; }   // R reaches every edge of the sticker: nothing it touches is drawn on
       }
       if(!placed) continue;
       stickerList.push(placed); made++;
