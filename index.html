@@ -872,7 +872,7 @@
   // where most of the interesting drawing actually happens. This concentrates most of the
   // slider's physical travel on the small-spacing end and compresses the wide/coarse end
   // into a shorter stretch at the far side.
-  const SPACING_MIN = 12, SPACING_MAX = 66, SPACING_CURVE_POWER = 2.5;
+  const SPACING_MIN = 10, SPACING_MAX = 66, SPACING_CURVE_POWER = 2.5;
   function spacingFromRaw(raw){
     const t = raw / 1000;
     return Math.round(SPACING_MIN + (SPACING_MAX - SPACING_MIN) * Math.pow(t, SPACING_CURVE_POWER));
