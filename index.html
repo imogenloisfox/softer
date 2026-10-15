@@ -1297,7 +1297,9 @@
         const d = Math.hypot(dx,dy);
         if(d>0 && d<=p1.sp*zoom*1.5){
           const dr = p2.r - p1.r;
+          const diag = d > p1.sp*zoom*1.2;     // a diagonal neighbour: one bridging point is enough, more of them swell the node
           for(let k=1;k<SUBDIV;k++){
+            if(diag && k !== 2) continue;
             const t=k/SUBDIV;
             extra.push({x:p1.x+dx*t, y:p1.y+dy*t, r:p1.r+dr*t});
           }
