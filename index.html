@@ -1857,10 +1857,12 @@
   const REMIX_TRIES = 160;
   const REMIX_WORDS = ['soft','softer','softness'];
   const REMIX_FONT_MAX_LETTERS = { 'Font 20':4, 'Font 24':4, 'Font 25':4 };   // an extra-wide face turns a longer word into a thin strip that cannot be read
+  const REMIX_LONG_WORD_FONTS = ['Font 14','Font 21','Font 22'];
+  const REMIX_CAPS_FONTS = ['Font 01','Font 02','Font 03','Font 06','Font 07','Font 12','Font 14','Font 18','Font 19','Font 21','Font 22','Font 23'];   // plain, even faces that read well in capitals
   const REMIX_FLOWER_WORD_FONTS = ['Font 06','Font 12'];   // faces whose letters stay readable when every dot is a flower
-  const REMIX_FONT_PLAIN_ONLY = ['Font 05','Font 20','Font 24','Font 25'];   // dense or extra-wide faces: joined or overlapping dots turn them into lumps
+  const REMIX_FONT_PLAIN_ONLY = ['Font 20','Font 24','Font 25'];   // dense or extra-wide faces: joined or overlapping dots turn them into lumps
   let remixWordLetters = 0, remixWordFont = '';
-  const REMIX_FONT_PRIORITY = ['Font 06','Font 12','Font 13'];   // shown more often in Remix
+  const REMIX_FONT_PRIORITY = ['Font 06','Font 10','Font 11','Font 12','Font 13'];   // shown more often in Remix
   const REMIX_WORD_CHANCE = 0.3;              // how often a remix is a typed word instead of a pattern
   const REMIX_SCALE = 0.25;                   // candidates are measured at a quarter of the size
   const DIRS8 = [[1,0],[1,1],[0,1],[-1,1],[-1,0],[-1,-1],[0,-1],[1,-1]];
@@ -1906,7 +1908,7 @@
     blob:    ['blobflower'],
     radial:  ['rings','waves'],
   };
-  const REMIX_CATS = [['word',0.38],['stickers',0.15],['spiral',0.06],['flower',0.25],['combo',0.08],['mirror',0.10],['cymatic',0.04],['radial',0.06]];
+  const REMIX_CATS = [['word',0.30],['stickers',0.15],['spiral',0.06],['flower',0.25],['combo',0.08],['mirror',0.10],['cymatic',0.04],['radial',0.06]];
   const remixCatOf = kind => {
     kind = String(kind || '');
     if(kind.startsWith('word')) return 'word';
@@ -1971,7 +1973,7 @@
     const ALL = REMIX_LIGHT.concat(REMIX_DARK);
     const lum = hex => { const n = parseInt(hex.slice(1), 16); return 0.299*(n>>16) + 0.587*((n>>8)&255) + 0.114*(n&255); };
     const avgLum = a => a.reduce((s,c) => s + lum(c), 0) / a.length;
-    const wordFlower = !!wordy && remixWordLetters <= 4 && REMIX_FLOWER_WORD_FONTS.includes(remixWordFont) && rnd() < 0.5;      // some words are set in gradient flowers instead of dots
+    const wordFlower = !!wordy && remixWordLetters <= 4 && REMIX_FLOWER_WORD_FONTS.includes(remixWordFont) && rnd() < 0.5;   // some short words are set in gradient flowers instead of dots
     const inkGradient = wordFlower || rnd() < 0.45, bgGradient = rnd() < 0.35;
     // The ink is drawn uniformly (every swatch, every ordered pair), then the background is drawn
     // uniformly from the options that contrast with it, so a gradient that has fewer partners
@@ -1987,12 +1989,12 @@
     const flower = wordFlower || !wordy && ((remixForceCat === 'flower' && rnd() < 0.3) || (remixForceCat === 'mirror' && rnd() < 0.3));   // flowers are too fine to spell with                // Flower cannot Blend
     // A word is set in one of three styles: joined (Blend), separate and blobby (big dots that overlap
     // into a chunky outline), or plain separate dots.
-    const wordStyle = wordy ? (wordFlower || REMIX_FONT_PLAIN_ONLY.includes(remixWordFont) || REMIX_SCRIPT_FONTS.includes(remixWordFont) ? 'plain' : rnd() < 0.4 ? 'blend' : (rnd() < 0.65 && remixWordLetters <= 5) ? 'blobby' : 'plain') : null;   // big overlapping dots fill the gaps of a long word
+    const wordStyle = wordy ? (wordFlower || REMIX_FONT_PLAIN_ONLY.includes(remixWordFont) ? 'plain' : rnd() < 0.4 ? 'blend' : (rnd() < 0.65 && remixWordLetters <= 5) ? 'blobby' : 'plain') : null;   // big overlapping dots fill the gaps of a long word
     const isBlob = !wordy && remixForceCat === 'blob';
     const blend = isBlob || !flower && (wordy ? wordStyle === 'blend' : (rnd() < 0.3 && remixFamily === REMIX_FAMILIES.spiral) || (rnd() < 0.45 && remixFamily === REMIX_FAMILIES.mirror));   // only spirals are joined into shapes: every other pattern stays as separate dots
     // a word needs a finer grid so its letters can be read
     const sp0 = wordFlower ? 17 + Math.round(rnd()*5)      // flowers need a coarser grid to read as flowers
-                     : wordy ? SPACING_MIN + Math.round(Math.pow(rnd(), 2) * 0.4 * (SPACING_MAX - SPACING_MIN))
+                     : wordy ? SPACING_MIN + Math.round(Math.pow(rnd(), 2) * (remixWordLetters >= 6 ? 0.12 : 0.4) * (SPACING_MAX - SPACING_MIN))
                      : SPACING_MIN + Math.round(Math.pow(rnd(), 1.5) * (SPACING_MAX - SPACING_MIN));
     // Blend on a coarse grid only gives a few huge smooth lumps with no detail, so Blend stays on a fine grid
     // Node size limits as a share of the Node size slider (5 to 75): Blend stays between 1% and
@@ -2006,7 +2008,7 @@
     // melts into its neighbours; the grid is set so the motif fills most of the canvas height
     const blobN = isBlob ? [5,7,7,9][Math.floor(rnd()*4)] : 0;
     const worldH = isBlob ? screenToWorld(0,H).y - screenToWorld(0,0).y : 0;
-    const sp = isBlob ? Math.max(26, Math.min(SPACING_MAX, Math.round(0.8*worldH/blobN))) : Math.min(sp0, REMIX_SP_CAP, spLimit, (wordy && REMIX_FONT_PLAIN_ONLY.includes(remixWordFont)) ? (remixWordLetters > 4 ? 15 : 24) : (wordy && remixWordFont === 'Font 13') ? 11 : 99);   // those faces need a finer grid to keep their gaps open
+    const sp = isBlob ? Math.max(26, Math.min(SPACING_MAX, Math.round(0.8*worldH/blobN))) : Math.min(sp0, REMIX_SP_CAP, spLimit, (wordy && REMIX_FONT_PLAIN_ONLY.includes(remixWordFont)) ? (remixWordLetters > 4 ? 15 : 24) : 99);   // those faces need a finer grid to keep their gaps open
     const ratio = blend ? 0.7 + rnd()*0.35 : (wordy ? (wordStyle === 'blobby' ? 0.85 + rnd()*0.4 : wordFlower ? 0.5 + rnd()*0.1 : 0.42 + rnd()*0.1) : 0.36 + rnd()*0.14);
     const sizeFor = (spacing, r, isBlend) => isBlend && !wordy ? Math.max(BLEND_SIZE_MIN, Math.min(BLEND_SIZE_MAX, Math.round(spacing*r)))
                                           : wordy ? Math.max(5, Math.min(WORD_SIZE_MAX, Math.round(spacing*r)))
@@ -2252,7 +2254,7 @@
       const build = () => {
         const on = new Set(), add = (a,b) => { for(const [x,y] of [[a,b],[b,a]]) for(const sx of [-1,1]) for(const sy of [-1,1]) on.add((x*sx)+','+(y*sy)); };
         add(0,0);
-        const r1 = rnd(); if(r1 < 0.4) add(1,0); else add(1,1);          // the centre is always joined to the rest
+        const r1 = rnd(); if(r1 < 0.2) add(1,0); else if(r1 < 0.5) add(1,1);          // else the centre stays alone
         const outer = 0.3 + rnd()*0.25;
         for(let a=2; a<=c; a++) for(let b=0; b<=a; b++){ const edge = Math.hypot(a,b) >= c-0.2; if(rnd() < (edge ? Math.max(outer, 0.5) : outer)) add(a,b); }
         return on;
@@ -2263,19 +2265,10 @@
         for(let y=-c; y<=c; y++){ let rr = 0, rc = 0; for(let x=-c; x<=c; x++){ rr = has(x,y) ? rr+1 : 0; rc = has(y,x) ? rc+1 : 0; run = Math.max(run, rr, rc); } }
         let dr = 0;
         for(let y=-c; y<=c; y++) for(let x=-c; x<=c; x++) if(has(x,y)){ let l1 = 1, l2 = 1; while(has(x+l1,y+l1)) l1++; while(has(x+l2,y-l2)) l2++; dr = Math.max(dr, l1, l2); }
-        // no loose dots, the centre dot included: every cell touches another, and the pieces
-        // stay few - a ring of separate arcs round a scatter of single dots reads as unfinished
-        let lone = 0, pieces = 0; const seen = new Set();
-        for(let y=-c; y<=c; y++) for(let x=-c; x<=c; x++) if(has(x,y) && !seen.has(x+','+y)){
-          pieces++; let n = 0; const stack = [[x,y]]; seen.add(x+','+y);
-          while(stack.length){ const [px,py] = stack.pop(); n++; for(const [dx,dy] of [[1,0],[-1,0],[0,1],[0,-1],[1,1],[1,-1],[-1,1],[-1,-1]]){ const k = (px+dx)+','+(py+dy); if(has(px+dx,py+dy) && !seen.has(k)){ seen.add(k); stack.push([px+dx,py+dy]); } } }
-          if(n === 1) lone++;
-        }
-        if(lone > 0 || pieces > 1) return false;   // one connected shape; blobs on a diagonal touch and count as joined
         return blocks === 0 && dr <= 3 && run <= 3 && on.size >= 8 && on.size <= 0.4*N*N;
       };
       let on = null;
-      for(let t=0; t<800 && !on; t++){ const cand = build(); if(ok(cand)) on = cand; }
+      for(let t=0; t<80 && !on; t++){ const cand = build(); if(ok(cand)) on = cand; }
       if(!on){ on = new Set(); for(const [x,y] of [[0,0],[2,0],[-2,0],[0,2],[0,-2],[1,1],[-1,1],[1,-1],[-1,-1]]) on.add(x+','+y); }
       const strokes = [];
       for(let y=-c; y<=c; y++){ const r = []; for(let x=-c; x<=c; x++) if(on.has(x+','+y)) r.push([centre.i+x, centre.j+y]); if(r.length) strokes.push(r); }
@@ -2501,21 +2494,20 @@
 
   // A word from the list, set in a random bundled font that has every letter. Fonts load on
   // demand, so this is the one async step in Remix.
-  const REMIX_FONT_SKIP = ['Font 08','Font 09','Font 10','Font 11','Font 15'];   // hairline or swash scripts: they stay in the font list but Remix does not pick them, they never read as dots
-  const REMIX_SCRIPT_FONTS = ['Font 08','Font 09','Font 10','Font 11','Font 13','Font 15'];   // scripts: only a capital 'Soft' reads, the lowercase letters fall apart on a grid
   async function remixPickWord(rnd){
-    let text = REMIX_WORDS[Math.floor(rnd()*REMIX_WORDS.length)].replace(' ', '\n');   // two words stack
-    const fonts = Array.from(fontSelect.options).map(o => o.value).filter(f => FONT_COVERAGE[f] && f !== 'Font 25' && !REMIX_FONT_SKIP.includes(f));   // Font 25 stays manual-only: too heavy to stay legible as blobs
+    const text = REMIX_WORDS[Math.floor(rnd()*REMIX_WORDS.length)].replace(' ', '\n');   // two words stack
+    const fonts = Array.from(fontSelect.options).map(o => o.value).filter(f => FONT_COVERAGE[f] && f !== 'Font 25');   // Font 25 stays manual-only: too heavy to stay legible as blobs
     const pri = fonts.filter(f => REMIX_FONT_PRIORITY.includes(f));
     for(let k=0; k<6 && fonts.length; k++){
       const src = (pri.length && rnd() < 0.55) ? pri : fonts;      // the favourite fonts come up more often
       const font = src.splice(Math.floor(rnd()*src.length), 1)[0];
       if(src === pri){ const at = fonts.indexOf(font); if(at >= 0) fonts.splice(at, 1); }
-      const useText = REMIX_SCRIPT_FONTS.includes(font) ? 'Soft' : text;
-      if(unsupportedChars(useText, font).length) continue;
+      if(unsupportedChars(text.replace(/\n/g, ' '), font).length) continue;
+      if(text === 'softness' && !REMIX_LONG_WORD_FONTS.includes(font)) continue;   // eight letters only stay readable in a few faces
       if(REMIX_FONT_MAX_LETTERS[font] && text.replace(/\s/g,'').length > REMIX_FONT_MAX_LETTERS[font]) continue;
       if(!(await loadTextFont(font))) continue;
-      return { text: useText, font, canvas: renderTextToCanvas(useText, font), longest: Math.max(...useText.split('\n').map(l => l.length)) };
+      const shown = (REMIX_CAPS_FONTS.includes(font) && text !== 'softness' && rnd() < 0.3) ? text.toUpperCase() : text;   // some plain faces are set in capitals
+      return { text: shown, font, canvas: renderTextToCanvas(shown, font), longest: Math.max(...shown.split('\n').map(l => l.length)) };
     }
     return null;
   }
@@ -2527,7 +2519,7 @@
     if(cols < 8 || rows < 4) return null;
     const img = w.canvas, scale = Math.min(cols/img.width, rows/img.height);
     const dw = Math.max(1, Math.floor(img.width*scale)), dh = Math.max(1, Math.floor(img.height*scale));
-    if(dw / w.longest < 9) return null;        // under about 9 cells per letter the word is not readable
+    if(dw / w.longest < (w.text.includes('\n') ? 6 : w.longest >= 7 ? 7 : 9)) return null;        // under about 9 cells per letter the word is not readable
     const tmp = document.createElement('canvas'); tmp.width = dw; tmp.height = dh;
     const t = tmp.getContext('2d', {willReadFrequently:true});
     t.fillStyle = '#fff'; t.fillRect(0,0,dw,dh); t.imageSmoothingQuality = 'high';
@@ -2645,13 +2637,13 @@
   // The rules. Each is a way Remix has been seen to go wrong; see A6 in the SPEC.
   function remixPasses(look, m, isWord){
     const checks = {
-      notEmpty:  m.coverage >= (isWord ? 0.04 : 0.12),   // letters are thin, so a word may ink less          // a few dots on a big empty canvas
+      notEmpty:  m.coverage >= (isWord ? 0.02 : 0.12),   // letters are thin, so a word may ink less          // a few dots on a big empty canvas
       notClogged: m.coverage <= (look.blend ? (isWord ? 0.30 : remixForceCat === 'mirror' || remixForceCat === 'blob' ? 0.5 : 0.19) : (isWord ? 0.40 : 0.30)),         // one heavy mass, holes filled in; a dense wall of dots or flowers is not a design
       masses:    isWord || String(m.kind).split('+')[0] === 'combo' ? (isWord || m.interior <= 0.3) : (remixForceCat === 'flower' || remixForceCat === 'mirror' || remixForceCat === 'blob' || m.interior <= 0.4),   // coils, plates and rings are line work: no solid blobs
       comboRich: isWord || String(m.kind).split('+')[0] !== 'combo' || m.nodes >= 240,   // a coil and a bloom need a fine grid to read
       solid:     isWord || !look.blend || remixForceCat === 'mirror' || remixForceCat === 'blob' || m.core <= 0.05,   // a Blend shape with a filled core is a blob, not line work
       notBlock:  isWord || (m.boxFill <= (look.blend ? 0.78 : 0.5) && m.cellFill <= 0.6),   // a plain filled rectangle is not a design
-      spreads:   m.spread >= (remixForceCat === 'blob' ? 0.4 : 0.6),            // a small cluster lost in the corner
+      spreads:   m.spread >= (isWord ? 0.6 : 0.6),            // a small cluster lost in the corner
       // Blend that does not blend: marks must actually join into shapes
       joins:     !look.blend || remixForceCat === 'blob' || (m.nodes >= 12 && m.nodes / Math.max(1, m.shapes) >= 2.5),
       // Separate needs enough marks to read as a composition
@@ -3650,7 +3642,7 @@
   }
 
   // Scripts with hairline strokes and long swashes (their letters are tiny next to the tails).
-  const SWASH_FONTS = ['Font 08','Font 09','Font 10','Font 11','Font 13','Font 15'];
+  const SWASH_FONTS = ['Font 08','Font 09','Font 11','Font 15'];
   const SWASH_BAND = { 'Font 09':[-0.85, 1.1], 'Font 15':[-0.85, 1.1] };   // rows kept round each line's middle, in font sizes: a tail below this is cut short
   function cropToInk(c, margin, keepTails){
     // Crops to the body of the lettering: rows and columns with almost no ink (a long swash or tail) are
@@ -3728,7 +3720,7 @@
         tctx.fillRect(0, b, w, (i === lines.length-1 ? h : yc + lineHeight/2) - b);
       });
     }
-    return swash ? cropToInk(tc, size*0.08, SWASH_FONTS.includes(fontFamily)) : tc;
+    return swash ? cropToInk(tc, size*0.08, fontFamily === 'Font 08' || fontFamily === 'Font 09' || fontFamily === 'Font 11' || fontFamily === 'Font 15') : tc;
   }
 
   function hasConversionSource(){
