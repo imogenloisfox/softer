@@ -1991,7 +1991,7 @@
     const flower = wordFlower || !wordy && ((remixForceCat === 'flower' && rnd() < 0.3) || (remixForceCat === 'mirror' && rnd() < 0.3));   // flowers are too fine to spell with                // Flower cannot Blend
     // A word is set in one of three styles: joined (Blend), separate and blobby (big dots that overlap
     // into a chunky outline), or plain separate dots.
-    const wordStyle = wordy ? (wordFlower || REMIX_FONT_PLAIN_ONLY.includes(remixWordFont) ? 'plain' : rnd() < 0.4 ? 'blend' : (rnd() < 0.65 && remixWordLetters <= 5) ? 'blobby' : 'plain') : null;   // big overlapping dots fill the gaps of a long word
+    const wordStyle = wordy ? (wordFlower || REMIX_FONT_PLAIN_ONLY.includes(remixWordFont) ? 'plain' : rnd() < 0.4 ? 'blend' : (rnd() < 0.65 && remixWordLetters <= 5 && !HEAVY_THICKEN.includes(remixWordFont)) ? 'blobby' : 'plain') : null;   // big overlapping dots fill the gaps of a long word
     const isBlob = !wordy && remixForceCat === 'blob';
     const blend = isBlob || !flower && (wordy ? wordStyle === 'blend' : (rnd() < 0.3 && remixFamily === REMIX_FAMILIES.spiral) || (rnd() < 0.45 && remixFamily === REMIX_FAMILIES.mirror));   // only spirals are joined into shapes: every other pattern stays as separate dots
     // a word needs a finer grid so its letters can be read
@@ -2519,7 +2519,8 @@
     const range = visibleCellRange(look.sp, look.size);
     const cols = range.i1-range.i0+1, rows = range.j1-range.j0+1;
     if(cols < 8 || rows < 4) return null;
-    const img = w.canvas, scale = Math.min(cols/img.width, rows/img.height);
+    const scale = Math.min(cols/w.canvas.width, rows/w.canvas.height);
+    const img = thickenForGrid(w.canvas, scale, SWASH_FONTS.includes(w.font), w.font);      // thin strokes are fattened for Remix words too
     const dw = Math.max(1, Math.floor(img.width*scale)), dh = Math.max(1, Math.floor(img.height*scale));
     if(dw / w.longest < (w.text.includes('\n') ? 6 : w.longest >= 7 ? 7 : 9)) return null;        // under about 9 cells per letter the word is not readable
     const tmp = document.createElement('canvas'); tmp.width = dw; tmp.height = dh;
@@ -3681,7 +3682,7 @@
   // Strokes thinner than about 0.6 of a grid cell vanish when the text is sampled down to the grid, so a
   // thin font is thickened just enough to survive (never more than 0.3 of a cell each side).
   const HEAVY_THICKEN = ['Font 08','Font 09','Font 10','Font 11','Font 12','Font 15','Font 17','Font 23','Font 24','Font 25'];     // hairline scripts: fatten the thinnest strokes enough for the grid to catch them
-  function thickenForGrid(src, scale, strong){
+  function thickenForGrid(src, scale, strong, fontName){
     const w = src.width, h = src.height, d = src.getContext('2d').getImageData(0,0,w,h).data, runs = [];
     const dark = (xx,yy) => d[(yy*w+xx)*4] < 128;
     for(let yy=0; yy<h; yy+=3){ let r = 0; for(let xx=0; xx<=w; xx++){ if(xx<w && dark(xx,yy)) r++; else { if(r) runs.push(r); r = 0; } } }
@@ -3689,7 +3690,7 @@
     if(runs.length < 8) return src;
     runs.sort((a,b) => a-b);
     const t = runs[Math.floor(runs.length*0.25)];                    // a thin-stroke thickness of this font, in source pixels
-    const heavy = HEAVY_THICKEN.includes(fontSelect.value);
+    const heavy = HEAVY_THICKEN.includes(fontName || fontSelect.value);
     const r = Math.min((heavy ? 0.8 : strong ? 0.5 : 0.3)/scale, Math.max(0, ((heavy ? 1.5 : strong ? 0.95 : 0.6)/scale - t)/2));
     if(r < 0.6) return src;
     const o = document.createElement('canvas'); o.width = w; o.height = h;
