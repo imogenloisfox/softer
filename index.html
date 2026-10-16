@@ -1896,7 +1896,7 @@
     nodeSet.clear(); for(const n of nodeList) nodeSet.add(n.i+'_'+n.j);
     remixLive.sig = remixSig();
   }
-  let remixPrev = { kind:null, ink:null, mask:null };   // the previous Remix, so the next one looks different
+  let remixPrev = { kind:null, ink:null, bg:null, mask:null };   // the previous Remix, so the next one looks different
   // Remix cycles through kinds of result: it never gives the same kind twice running (two words, two
   // spirals, two flower heads...). Each Remix first picks a kind other than the last one, then builds it.
   const REMIX_FAMILIES = {
@@ -1905,10 +1905,9 @@
     combo:   ['combo'],
     cymatic: ['cymatic'],
     mirror:  ['mirrored','kaleido'],
-    blob:    ['blobflower'],
     radial:  ['rings','waves'],
   };
-  const REMIX_CATS = [['word',0.30],['stickers',0.15],['spiral',0.06],['flower',0.25],['combo',0.08],['mirror',0.10],['cymatic',0.04],['radial',0.06]];
+  const REMIX_CATS = [['word',0.30],['stickers',0.15],['spiral',0.06],['flower',0.25],['combo',0.08],['mirror',0.17],['cymatic',0.04],['radial',0.06]];
   const remixCatOf = kind => {
     kind = String(kind || '');
     if(kind.startsWith('word')) return 'word';
@@ -1948,7 +1947,7 @@
     for(const n of nodes) n.r = look.size;
   }
   function remixSimilar(look, nodes, m, word){   // same pattern kind, same ink, or nearly the same shape as last time
-    return remixKindOf(nodes, word) === remixPrev.kind || look.ink.join() === remixPrev.ink || remixOverlap(m) > 0.45;
+    return remixKindOf(nodes, word) === remixPrev.kind || remixCatOf(remixKindOf(nodes, word)) === remixPrevCat || look.ink.join() === remixPrev.ink || look.bg.join() === remixPrev.bg || remixOverlap(m) > 0.45;
   }
   let remixLastBg = null;                     // background of the previous remix; the next one must differ
   let lastRemix = null;                       // measurements of the last remix (read by the tests)
@@ -1971,6 +1970,8 @@
     // for a gradient: none is favoured. The only filter is contrast, so ink and background are
     // always clearly apart in lightness (average and at every pair of ends).
     const ALL = REMIX_LIGHT.concat(REMIX_DARK);
+    const cw = c => c === '#FF3B0F' ? 0.15 : (c === '#FFCCEE' || c === '#FFA4E0') ? 2 : 1;   // red is used less, the pinks more
+    const wpick = (a, w) => { const ws = a.map(w); let r = rnd()*ws.reduce((x,y) => x+y, 0); for(let k=0; k<a.length; k++){ r -= ws[k]; if(r <= 0) return a[k]; } return a[a.length-1]; };
     const lum = hex => { const n = parseInt(hex.slice(1), 16); return 0.299*(n>>16) + 0.587*((n>>8)&255) + 0.114*(n&255); };
     const avgLum = a => a.reduce((s,c) => s + lum(c), 0) / a.length;
     const wordFlower = !!wordy && remixWordLetters <= 4 && REMIX_FLOWER_WORD_FONTS.includes(remixWordFont) && rnd() < 0.5;   // some short words are set in gradient flowers instead of dots
@@ -1982,8 +1983,9 @@
     const bgOptions = bgGradient ? ALL.flatMap(x => ALL.filter(y => y !== x).map(y => [x, y])) : ALL.map(c => [c]);
     let inkCols = null, bgCols = null;
     for(let g=0; g<400 && !inkCols; g++){
-      const ink = inkGradient ? two(ALL) : [pick(ALL)], fits = bgOptions.filter(bg => contrasts(ink, bg));
-      if(fits.length){ inkCols = ink; bgCols = pick(fits); }
+      const w1 = wpick(ALL, cw), ink = inkGradient ? [w1, wpick(ALL.filter(c => c !== w1), cw)] : [w1]; let fits = bgOptions.filter(bg => contrasts(ink, bg));
+      if(bgGradient && fits.length && fits.every(bg => bg.includes('#FF3B0F')) && rnd() < 0.8) fits = ALL.map(c => [c]).filter(bg => contrasts(ink, bg));   // the only dark partners are red ones: mostly use a plain background instead
+      if(fits.length){ inkCols = ink; bgCols = wpick(fits, b => Math.min(...b.map(cw))); }
     }
     if(!inkCols){ inkCols = [pick(REMIX_LIGHT)]; bgCols = [pick(REMIX_DARK)]; }   // cannot happen in practice
     const flower = wordFlower || !wordy && ((remixForceCat === 'flower' && rnd() < 0.3) || (remixForceCat === 'mirror' && rnd() < 0.3));   // flowers are too fine to spell with                // Flower cannot Blend
@@ -2642,7 +2644,7 @@
       masses:    isWord || String(m.kind).split('+')[0] === 'combo' ? (isWord || m.interior <= 0.3) : (remixForceCat === 'flower' || remixForceCat === 'mirror' || remixForceCat === 'blob' || m.interior <= 0.4),   // coils, plates and rings are line work: no solid blobs
       comboRich: isWord || String(m.kind).split('+')[0] !== 'combo' || m.nodes >= 240,   // a coil and a bloom need a fine grid to read
       solid:     isWord || !look.blend || remixForceCat === 'mirror' || remixForceCat === 'blob' || m.core <= 0.05,   // a Blend shape with a filled core is a blob, not line work
-      notBlock:  isWord || (m.boxFill <= (look.blend ? 0.78 : 0.5) && m.cellFill <= 0.6),   // a plain filled rectangle is not a design
+      notBlock:  isWord || (remixForceCat === 'mirror' ? (m.boxFill <= 0.8 && m.cellFill <= 0.78) : (m.boxFill <= (look.blend ? 0.78 : 0.5) && m.cellFill <= 0.6)),   // the dense mirrored fills are allowed to be full   // a plain filled rectangle is not a design
       spreads:   m.spread >= (isWord ? 0.6 : 0.6),            // a small cluster lost in the corner
       // Blend that does not blend: marks must actually join into shapes
       joins:     !look.blend || remixForceCat === 'blob' || (m.nodes >= 12 && m.nodes / Math.max(1, m.shapes) >= 2.5),
@@ -2812,7 +2814,7 @@
     remixApply(look);
     lastRemix = { stickers: items.length, bg: look.bg.join(), sp: look.sp, size: look.size, word: null, font: null, tries, failed: [], blend: look.blend,
                   nodes: 0, kind: 'stickers:'+name, overlap: 0, ink: look.ink.join(), prevKind: remixPrev.kind };
-    remixPrev = { kind: lastRemix.kind, ink: lastRemix.ink, mask: null };
+    remixPrev = { kind: lastRemix.kind, ink: lastRemix.ink, bg: lastRemix.bg, mask: null };
     remixPrevScene = { k1: remixSceneNow.k1, k2: remixSceneNow.k2, sig: remixSceneSig(items) };
     pushHistory();
     stickerList = stickerList.filter(st => !st.rx);        // stickers the visitor placed stay
@@ -2894,13 +2896,16 @@
     remixForceCat = remixPickCat(rnd, remixPrevCat);
     remixFamily = null;
     // Remix starts a new picture: every sticker, the visitor's own included, is cleared. Undo still brings them back.
-    const preSnap = snapshotContent(), preStickers = stickerList, preLen = undoStack.length;
+    const preSnap = snapshotContent(), preStickers = stickerList, preLen = undoStack.length, preRemix = lastRemix;
     if(pendingStickerKey){ pendingStickerKey = null; Object.values(stickerThumbEls).forEach(el => el.classList.remove('active')); }   // a sticker armed before the Remix is put down, so the next click edits the design instead of stamping
     stickerList = [];
     try { await remixInner(rnd); }
     finally { remixForceCat = null; remixFamily = null; }
-    if(undoStack.length === preLen + 1) undoStack[undoStack.length-1] = preSnap;       // undo goes back to before the Remix
+    // judged by lastRemix, not by the history length: once the history is full its length stops growing, which used to
+    // look like "nothing was remixed" and put the OLD stickers back on screen after about 50 Remixes
+    if(lastRemix !== preRemix){ if(undoStack.length > preLen || undoStack.length >= HISTORY_LIMIT) undoStack[undoStack.length-1] = preSnap; }   // undo goes back to before the Remix
     else if(undoStack.length === preLen) stickerList = preStickers;                      // nothing was remixed
+    render();
     if(lastRemix) remixPrevCat = remixCatOf(lastRemix.kind);
   }
   async function remixInner(rnd){
@@ -2985,7 +2990,7 @@
     lastRemix = Object.assign({ stickers: 0, bg: chosen.look.bg.join(), sp: chosen.look.sp, size: chosen.look.size, word: word ? word.text.replace('\n',' ') : null, font: word ? word.font : null, tries:chosen.tries, failed:chosen.failed, blend:chosen.look.blend }, chosen.m);
     lastRemix.kind = remixKindOf(chosen.nodes, word); lastRemix.overlap = remixOverlap(chosen.m); lastRemix.ink = chosen.look.ink.join();
     lastRemix.prevKind = remixPrev.kind;
-    remixPrev = { kind: lastRemix.kind, ink: lastRemix.ink, mask: chosen.m.mask };
+    remixPrev = { kind: lastRemix.kind, ink: lastRemix.ink, bg: lastRemix.bg, mask: chosen.m.mask };
     delete lastRemix.mask;
     pushHistory();
     remixStickers(chosen.look, rnd, chosen.nodes);
