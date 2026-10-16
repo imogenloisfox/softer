@@ -3667,7 +3667,7 @@
   }
   // Strokes thinner than about 0.6 of a grid cell vanish when the text is sampled down to the grid, so a
   // thin font is thickened just enough to survive (never more than 0.3 of a cell each side).
-  const HEAVY_THICKEN = ['Font 15'];     // hairline scripts: fatten the thinnest strokes enough for the grid to catch them
+  const HEAVY_THICKEN = ['Font 08','Font 09','Font 10','Font 11','Font 12','Font 15','Font 17','Font 23','Font 24','Font 25'];     // hairline scripts: fatten the thinnest strokes enough for the grid to catch them
   function thickenForGrid(src, scale, strong){
     const w = src.width, h = src.height, d = src.getContext('2d').getImageData(0,0,w,h).data, runs = [];
     const dark = (xx,yy) => d[(yy*w+xx)*4] < 128;
