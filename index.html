@@ -3233,15 +3233,28 @@
       if(mergeStyle === 'circles'){
         const pts = projectNodes(vOut);
         if(nodeShape === 'flower'){
-          defs += `<path id="flower" d="${FLOWER_PATH}"/>`;
-          if(fillMode === 'gradient'){
-            defs += `<linearGradient id="flowerInk" gradientUnits="userSpaceOnUse" x1="0" y1="0" x2="0" y2="${FLOWER_R*2}">${svgStops(gradientTop, gradientBottom)}</linearGradient>`;
-            ink = 'url(#flowerInk)';
-          }
-          body += `<g fill="${ink}">` + pts.map(n => {
-            const k = n.r / FLOWER_R;
-            return `<use href="#flower" transform="translate(${svgNum(n.x)} ${svgNum(n.y)}) scale(${k.toFixed(4)}) translate(${-FLOWER_R} ${-FLOWER_R})"/>`;
-          }).join('') + '</g>';
+          // Each flower is written out as its own plain path (no <use>/<symbol>, no transforms), which Illustrator opens reliably
+          const toks = FLOWER_PATH.match(/[A-Za-z]|-?\d*\.?\d+/g);
+          const flowerAt = (cx, cy, r) => {
+            const k = r / FLOWER_R; let out = '', ci = 0;
+            for(const t of toks){
+              if(/[A-Za-z]/.test(t)){ out += t; ci = 0; continue; }
+              const v = parseFloat(t), x = (ci % 2 === 0);
+              out += (ci ? ' ' : '') + svgNum(((v - FLOWER_R)*k) + (x ? cx : cy));
+              ci++;
+            }
+            return out;
+          };
+          let gi = 0;
+          body += pts.map(n => {
+            let fill = ink;
+            if(fillMode === 'gradient'){
+              const id = 'fl' + (gi++);
+              defs += `<linearGradient id="${id}" gradientUnits="userSpaceOnUse" x1="0" y1="${svgNum(n.y - n.r)}" x2="0" y2="${svgNum(n.y + n.r)}">${svgStops(gradientTop, gradientBottom)}</linearGradient>`;
+              fill = `url(#${id})`;
+            }
+            return `<path fill="${fill}" d="${flowerAt(n.x, n.y, n.r)}"/>`;
+          }).join('');
         } else {
           body += `<g fill="${ink}">` + pts.map(n => `<circle cx="${svgNum(n.x)}" cy="${svgNum(n.y)}" r="${svgNum(n.r)}"/>`).join('') + '</g>';
         }
